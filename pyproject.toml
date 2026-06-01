@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "go_analysis"
+version = "0.2.0"
+description = "Go game strength analysis with Transformer + ordinal regression"
+authors = [{ name = "Tom Zhao", email = "ahill.zhao@gmail.com" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.21",
+    "pandas>=1.3",
+    "scikit-learn>=1.0",
+    "torch>=2.0",
+    "tqdm>=4.60",
+    "matplotlib>=3.4",
+    "seaborn>=0.11",
+    "pysgf>=0.9",
+]
+
+[project.urls]
+homepage = "https://github.com/ahillzhao-msn/go_analysis"
+repository = "https://github.com/ahillzhao-msn/go_analysis"
+
+[project.optional-dependencies]
+dev = ["pytest", "flake8", "mypy"]
+
+[project.scripts]
+go-analysis-train = "go_analysis.train:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

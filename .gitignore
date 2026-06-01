@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project data & config
+analysis_store/
+analysis_store_meta/
+analysis_store_test/
+analysis_logs/
+train_sample/
+checkpoints/
+test_pool_output/
+*.npz
+*.pt
+
+# Environment & local config
+.env
+.env.local
+
+# KataGo models & binaries (large binary files)
+kata-go/models/*.bin.gz
+kata-go/windows/*.exe
+kata-go/windows/v1.16.4/*.exe
+kata-go/windows/v1.16.4/*.dll
+kata-go/windows/KataGoData/
+kata-go/KataGoData/
+
+# Katago install artifacts
+katago_install/katago
+katago_install/*.dll
+katago_install/*.exe
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Local Bob SGF directory (outside project)
+Bob/
