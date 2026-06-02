@@ -215,6 +215,34 @@ def cluster():
     """管理分析集群"""
 
 @cluster.command()
+@click.option("--visits", default=0, type=int, help="Visits (0=smart)")
+@click.option("--sgf", required=True, help="SGF file or directory")
+@click.option("--parallel", default=0, type=int, help="Parallel engines (0=config)")
+@click.pass_context
+def benchmark(ctx, visits, sgf, parallel):
+    """性能基准测试"""
+    cfg = ctx.obj["CFG"]
+    from go_analysis.parallel import ParallelEngine
+    path = Path(sgf)
+    if path.is_dir():
+        sgf_files = sorted(str(f) for f in path.rglob("*.sgf"))[:10]
+    else:
+        sgf_files = [sgf]
+
+    engine = ParallelEngine(cfg)
+    engine.start()
+
+    try:
+        results = engine.analyze_all(sgf_files, visits=visits, max_workers=parallel)
+        for r in results:
+            if r.get("success"):
+                print(engine.monitor.print_report())
+            else:
+                print(f"  ❌ {r.get('game_id','?')}: {r.get('error','unknown')}")
+    finally:
+        engine.shutdown()
+
+@cluster.command()
 @click.pass_context
 def status(ctx):
     """查看集群状态"""
