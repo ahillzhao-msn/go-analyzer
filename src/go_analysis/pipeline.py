@@ -285,3 +285,39 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def run_analysis_pipeline(
+    sgf_dir: str,
+    output_dir: str,
+    mode: str = "meta",
+    max_visits: int = 96,
+    platform: str = "auto",
+    limit: int = 0,
+    **kwargs,
+) -> dict:
+    """
+    CLI 可调用的分析管线入口。
+
+    支持通过 platform 选择适配器:
+    - auto: create_adapter() 自动选择
+    - windows_native: WSL Windows KataGo
+    - ssh/http: 远程主机
+    """
+    if mode == "meta":
+        return batch_collect_meta(
+            sgf_dir=sgf_dir,
+            output_dir=output_dir,
+            limit=limit,
+        )
+    else:
+        return analyze_and_store(
+            sgf_dir=sgf_dir,
+            output_dir=output_dir,
+            katago_path=kwargs.get("katago_path"),
+            model_path=kwargs.get("model_path"),
+            config_path=kwargs.get("config_path"),
+            max_visits=max_visits,
+            limit=limit,
+            skip_existing=kwargs.get("skip_existing", True),
+        )

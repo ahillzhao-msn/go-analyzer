@@ -34,6 +34,7 @@ repository = "https://github.com/ahillzhao-msn/go_analysis"
 dev = ["pytest", "flake8", "mypy"]
 
 [project.scripts]
+go-analyzer = "go_analysis.cli:cli"
 go-analysis-train = "go_analysis.train:main"
 
 [tool.setuptools.packages.find]
