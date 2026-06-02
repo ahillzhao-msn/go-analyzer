@@ -41,10 +41,6 @@ kata-go/windows/v1.16.4/*.dll
 kata-go/windows/KataGoData/
 kata-go/KataGoData/
 
-# Katago install artifacts
-katago_install/katago
-katago_install/*.dll
-katago_install/*.exe
 
 # OS
 .DS_Store
