@@ -174,8 +174,23 @@ def discover(ctx, project_root):
         click.echo(f"      Capabilities: {', '.join(h['capabilities'])}")
 
     # 注册到配置
-    # register_discovered_hosts(cfg, hosts)  # Persistent storage TBD
-    click.echo("  (Run 'host register' to persist)")
+    from go_analysis.discovery import register_discovered_hosts
+    register_discovered_hosts(cfg, hosts)
+    click.echo(f"  Registered {len(hosts)} host(s) to config.")
+    click.echo("  Use 'host save' to persist to disk.")
+
+
+@host.command()
+@click.option("--file", default="config.yaml", help="Target config file")
+@click.pass_context
+def save(ctx, file):
+    """持久化主机注册表到配置文件"""
+    from go_analysis.router import AnalysisRouter
+    from go_analysis.config import ConfigManager
+    cfg = ConfigManager()
+    router = AnalysisRouter(cfg)
+    router.save_to_config(file)
+    click.echo(f"Saved {router.host_count} host(s) to {file}")
 
 
 @host.command()
@@ -204,9 +219,37 @@ def cluster():
 def status(ctx):
     """查看集群状态"""
     cfg = ctx.obj["CFG"]
-    hosts = cfg.hosts
-    click.echo(f"Cluster: {len(hosts)} hosts registered")
-    click.echo("  (Health monitoring TBD — Phase 2)")
+    click.echo("Cluster: scanning...")
+    from go_analysis.router import AnalysisRouter
+    router = AnalysisRouter(cfg)
+
+    hosts = router.health_check_all(timeout_s=5)
+    click.echo(f"  {len(hosts)} host(s) found:")
+
+    for h in hosts:
+        status_icon = "✅" if h.healthy else ("⚠️" if h.alive else "❌")
+        click.echo(f"  {status_icon} {h.name}")
+        click.echo(f"      Platform: {h.platform}")
+        click.echo(f"      Path:     {h.kata_path}")
+        click.echo(f"      Alive:    {h.alive}, Latency: {h.latency_ms:.0f}ms")
+        click.echo(f"      Load:     {h.load}/{h.max_concurrent}, Available: {h.available_slots}")
+        if h.error:
+            click.echo(f"      Error:    {h.error}")
+
+
+@cluster.command()
+@click.argument("name", required=True)
+@click.pass_context
+def health(ctx, name):
+    """检查单台主机健康"""
+    cfg = ctx.obj["CFG"]
+    from go_analysis.router import AnalysisRouter
+    router = AnalysisRouter(cfg)
+    host = router.health_check(name)
+    if host.healthy:
+        click.echo(f"✅ {host.name}: alive, {host.available_slots}/{host.max_concurrent} slots free")
+    else:
+        click.echo(f"❌ {host.name}: {'busy' if host.alive else 'dead'} — {host.error or 'no available slots'}")
 
 
 # ── train ─────────────────────────────────────────────

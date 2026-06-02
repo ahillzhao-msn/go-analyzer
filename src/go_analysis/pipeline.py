@@ -124,15 +124,16 @@ def analyze_and_store(
     max_visits: int = 50,
     limit: int = 0,
     skip_existing: bool = True,
+    platform: str = "auto",
+    use_router: bool = True,
 ):
-    """模式 2: 完整分析 — KataGo + 特征提取 + 压缩。"""
-    try:
-        from go_analysis.analyzer import KataGoBatchAnalyzer
-        from .models import extract_features_from_analysis, compute_global_stats
-    except ImportError as e:
-        print(f"[ERROR] {e}")
-        print("  full mode requires go_analysis.analyzer with KataGo installed.")
-        sys.exit(1)
+    """模式 2: 完整分析 — 适配器模式 + 路由器。
+
+    优先使用 AnalysisRouter 选择最佳主机,
+    回退到 create_adapter() 直接创建适配器。
+    """
+    from go_analysis.analyzer import create_adapter
+    from .models import extract_features_from_analysis, compute_global_stats
 
     hw = collect_hardware()
     sw = collect_software(katago_path=katago_path, katago_model=model_path, max_visits=max_visits)
@@ -146,67 +147,108 @@ def analyze_and_store(
         print("[Pipeline] No SGF files found.")
         return {"game_count": 0}
 
-    print(f"[Pipeline] Analyzing {len(sgf_files)} games with KataGo (visits={max_visits})...")
+    # 使用路由器选择主机
+    adapter = None
+    router = None
+    assigned_host = None
+    if use_router:
+        from go_analysis.router import AnalysisRouter
+        from go_analysis.config import ConfigManager
+        cfg = ConfigManager()
+        router = AnalysisRouter(cfg)
+        router.health_check_all(timeout_s=5)
+
+        # 选择一个主机
+        host = router.select_best(preferred_platform=platform if platform != "auto" else None)
+        if host:
+            assigned_host = host.name
+            router.schedule(task_size=len(sgf_files))
+            print(f"[Pipeline] Router: assigned to {host.name} ({host.platform}, load={host.load})")
+            # 用主机的路径创建适配器
+            try:
+                adapter = create_adapter(
+                    platform=host.platform,
+                    katago_path=host.kata_path,
+                    model_path=host.model_path,
+                    visits=max_visits,
+                )
+            except Exception as e:
+                print(f"[Pipeline] Router host failed, fallback to auto: {e}")
+                adapter = None
+
+    # 回退: 直接创建适配器
+    if adapter is None:
+        print(f"[Pipeline] Creating adapter directly (platform={platform}, visits={max_visits})...")
+        adapter = create_adapter(
+            platform=platform,
+            katago_path=katago_path,
+            model_path=model_path or None,
+            config_path=config_path or None,
+            visits=max_visits,
+        )
+
+    print(f"[Pipeline] Analyzing {len(sgf_files)} games (visits={max_visits})...")
+    print(f"  Adapter: {adapter.__class__.__name__}")
     print(f"  Min moves: {MIN_MOVES}+")
 
-    analyzer = KataGoBatchAnalyzer(
-        katago_path=katago_path,
-        model_path=model_path or None,
-        config_path=config_path or None,
-        max_visits=max_visits,
-    )
+    try:
+        adapter.start()
 
-    analyzed = 0
-    skipped = 0
-    errors = 0
-    filtered = 0
+        analyzed = 0
+        skipped = 0
+        errors = 0
+        filtered = 0
 
-    for sgf_path in tqdm(sgf_files, desc="Analyzing"):
-        game_id = Path(sgf_path).stem
-        if skip_existing and store.get(game_id) is not None:
-            skipped += 1
-            continue
+        for sgf_path in tqdm(sgf_files, desc="Analyzing"):
+            game_id = Path(sgf_path).stem
+            if skip_existing and store.get(game_id) is not None:
+                skipped += 1
+                continue
 
-        try:
-            game = extract_game_meta_from_sgf_file(sgf_path, game_id=game_id)
-        except Exception as e:
-            print(f"  [WARN] Failed to parse {sgf_path}: {e}")
-            errors += 1
-            continue
+            try:
+                game = extract_game_meta_from_sgf_file(sgf_path, game_id=game_id)
+            except Exception as e:
+                print(f"  [WARN] Failed to parse {sgf_path}: {e}")
+                errors += 1
+                continue
 
-        if game.total_moves < MIN_MOVES:
-            filtered += 1
-            continue
+            if game.total_moves < MIN_MOVES:
+                filtered += 1
+                continue
 
-        try:
-            result = analyzer.analyze_sgf_file(sgf_path)
-        except Exception as e:
-            print(f"  [ERROR] KataGo failed on {sgf_path}: {e}")
-            errors += 1
-            continue
+            try:
+                content = Path(sgf_path).read_text(encoding="utf-8", errors="replace")
+                result = adapter.analyze(content, game_id=game_id, visits=max_visits)
+            except Exception as e:
+                print(f"  [ERROR] Analysis failed on {sgf_path}: {e}")
+                errors += 1
+                continue
 
-        if result is None:
-            print(f"  [WARN] No analysis result for {sgf_path}")
-            errors += 1
-            continue
+            if not result or not result.success:
+                print(f"  [WARN] No analysis result for {sgf_path}")
+                errors += 1
+                continue
 
-        all_moves = []
-        for player in ("B", "W"):
-            all_moves.extend(extract_features_from_analysis(result, player))
+            all_moves = []
+            for player in ("B", "W"):
+                all_moves.extend(extract_features_from_analysis(result.raw_json or {}, player))
 
-        if not all_moves:
-            print(f"  [WARN] No valid moves in {sgf_path}")
-            errors += 1
-            continue
+            if not all_moves:
+                print(f"  [WARN] No valid moves in {sgf_path}")
+                errors += 1
+                continue
 
-        features = np.stack([m.features for m in all_moves], axis=0)
-        gs = compute_global_stats(all_moves)
+            features = np.stack([m.features for m in all_moves], axis=0)
+            gs = compute_global_stats(all_moves)
 
-        record = AnalysisRecord.compress(features, gs, hw, sw, game)
-        store.put(game_id, record)
-        analyzed += 1
+            record = AnalysisRecord.compress(features, gs, hw, sw, game)
+            store.put(game_id, record)
+            analyzed += 1
 
-    analyzer.shutdown()
+    finally:
+        adapter.shutdown()
+        if router and assigned_host:
+            router.release(assigned_host, task_size=len(sgf_files))
 
     stats = store.stats()
     stats.update({"analyzed": analyzed, "skipped": skipped, "errors": errors, "filtered": filtered})
@@ -320,4 +362,6 @@ def run_analysis_pipeline(
             max_visits=max_visits,
             limit=limit,
             skip_existing=kwargs.get("skip_existing", True),
+            platform=platform,
+            use_router=kwargs.get("use_router", True),
         )

@@ -24,7 +24,8 @@ class YunYi:
 
     def __init__(self, ca_file=None, level=None):
         self.ROOT_URL = 'https://weiqi-v2.ynwqxh.com'
-        #ca_file = 'ynwqxh-com-chain.pem'
+        # ca_file from env or skip verification
+        self.ca_file = ca_file or os.environ.get('YN_CA_FILE')
         self.tenant_id = '183'
         self.token = None
         self.level_map = {
@@ -60,8 +61,8 @@ class YunYi:
 
     def login(self)->str:
         loginData = {
-            'identifier': 'YOUR_PHONE', # placeholder
-            'verification':'Imperial',
+            'identifier': os.environ.get('YN_USER', 'YOUR_PHONE'),
+            'verification': os.environ.get('YN_PASS', 'Imperial'),
             'endName':'gui',
             'channel':'PASSWORD'
         }

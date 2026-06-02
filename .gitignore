@@ -36,11 +36,15 @@ test_pool_output/
 # KataGo models & binaries (large binary files)
 kata-go/models/*.bin.gz
 kata-go/windows/*.exe
+kata-go/windows/*.dll
 kata-go/windows/v1.16.4/*.exe
 kata-go/windows/v1.16.4/*.dll
 kata-go/windows/KataGoData/
 kata-go/KataGoData/
 
+
+# Certificate files (internal infrastructure)
+*.pem
 
 # OS
 .DS_Store
