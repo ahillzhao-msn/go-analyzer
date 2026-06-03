@@ -294,19 +294,62 @@ def status(ctx):
             click.echo(f"      Error:    {h.error}")
 
 
-@cluster.command()
-@click.argument("name", required=True)
+@host.command()
+@click.argument("hostname", required=True)
+@click.option("--user", default=None, help="SSH username")
+@click.option("--port", default=22, type=int, help="SSH port")
+@click.option("--identity", default=None, help="SSH key path")
 @click.pass_context
-def health(ctx, name):
-    """检查单台主机健康"""
+def deploy(ctx, hostname, user, port, identity):
+    """SSH部署 KataGo 到远程主机并注册"""
+    from go_analysis.worker_deploy import deploy_ssh
+    import yaml
+
     cfg = ctx.obj["CFG"]
-    from go_analysis.router import AnalysisRouter
-    router = AnalysisRouter(cfg)
-    host = router.health_check(name)
-    if host.healthy:
-        click.echo(f"✅ {host.name}: alive, {host.available_slots}/{host.max_concurrent} slots free")
+    config_path = ctx.obj.get("CONFIG") or "config.yaml"
+
+    result = deploy_ssh(
+        host=hostname,
+        user=user or os.environ.get("SSH_USER", "root"),
+        port=port,
+        identity_file=identity,
+    )
+
+    if result["success"]:
+        click.echo(f"\n✅ Deployment successful!")
+        click.echo(f"  Name:    {result['name']}")
+        click.echo(f"  Kata:    {result['kata_path']}")
+        click.echo(f"  Model:   {result['model_path']}")
+
+        # 自动注册到 config.yaml
+        path = Path(config_path)
+        if path.exists():
+            with open(path) as f:
+                config = yaml.safe_load(f) or {}
+        else:
+            config = {}
+
+        hosts = config.setdefault("hosts", [])
+        for i, h in enumerate(hosts):
+            if h.get("name") == result["name"]:
+                hosts.pop(i)
+                break
+        hosts.append({
+            "name": result["name"],
+            "platform": "ssh",
+            "host": result["host"],
+            "port": result["port"],
+            "user": result.get("user", ""),
+            "kata_path": result["kata_path"],
+            "model_path": result["model_path"],
+            "max_concurrent": 3,
+        })
+
+        with open(path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        click.echo(f"  Registered to {config_path}")
     else:
-        click.echo(f"❌ {host.name}: {'busy' if host.alive else 'dead'} — {host.error or 'no available slots'}")
+        click.echo(f"\n❌ Deployment failed. Check SSH connectivity and paths.")
 
 
 # ── train ─────────────────────────────────────────────
