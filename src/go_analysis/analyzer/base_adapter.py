@@ -127,6 +127,10 @@ def create_adapter(platform: str = None,
                    kata_path: str = None,
                    model_path: str = None,
                    config_path: str = None,
+                   host: str = None,
+                   port: int = 22,
+                   user: str = None,
+                   identity_file: str = None,
                    **kwargs) -> "BaseAdapter":
     """工厂函数 — 创建一个适配器实例。
 
@@ -140,6 +144,7 @@ def create_adapter(platform: str = None,
         模型权重路径。
     config_path : str or None
         配置文件路径。
+    host, port, user, identity_file : SSH 连接参数。
 
     Returns
     -------
@@ -161,5 +166,17 @@ def create_adapter(platform: str = None,
         from .adapters.wsl_cuda import WSLCUDAAdapter
         return WSLCUDAAdapter(kata_path=kata_path, model_path=model_path,
                                config_path=config_path, **kwargs)
+    elif platform == "ssh":
+        from .adapters.ssh_remote import SshRemoteAdapter
+        return SshRemoteAdapter(
+            host=host or "localhost",
+            port=port,
+            user=user or os.environ.get("SSH_USER", "root"),
+            identity_file=identity_file or os.environ.get("SSH_IDENTITY"),
+            remote_katago=kata_path or "katago",
+            remote_model=model_path or "",
+            remote_config=config_path or "",
+            **kwargs,
+        )
     else:
         raise ValueError(f"Unknown adapter platform: {platform}")

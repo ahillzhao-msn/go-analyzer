@@ -170,6 +170,9 @@ def analyze_and_store(
                     platform=host.platform,
                     kata_path=host.kata_path,
                     model_path=host.model_path,
+                    host=host.ssh_host,
+                    port=host.ssh_port,
+                    user=host.ssh_user,
                     visits=max_visits,
                 )
             except Exception as e:

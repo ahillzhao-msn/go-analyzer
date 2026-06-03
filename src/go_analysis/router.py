@@ -35,6 +35,9 @@ class HostStatus:
     platform: str
     kata_path: str
     model_path: Optional[str]
+    ssh_host: str = "localhost"
+    ssh_port: int = 22
+    ssh_user: str = ""
     alive: bool = False
     latency_ms: float = 0.0
     load: int = 0           # 当前排队任务数
@@ -70,13 +73,15 @@ class AnalysisRouter:
     def register(self, name: str, platform: str, kata_path: str,
                  model_path: Optional[str] = None,
                  max_concurrent: int = 3,
-                 host: str = "localhost", port: int = 0):
+                 host: str = "localhost", port: int = 0,
+                 user: str = ""):
         """注册主机"""
         with self._lock:
             self._hosts[name] = HostStatus(
                 name=name, platform=platform,
                 kata_path=kata_path, model_path=model_path,
                 max_concurrent=max_concurrent,
+                ssh_host=host, ssh_port=port, ssh_user=user,
             )
 
     def unregister(self, name: str):
@@ -228,7 +233,9 @@ class AnalysisRouter:
                 config["hosts"].append({
                     "name": host.name,
                     "platform": host.platform,
-                    "host": "localhost",
+                    "host": host.ssh_host,
+                    "port": host.ssh_port,
+                    "user": host.ssh_user,
                     "kata_path": host.kata_path,
                     "model_path": host.model_path,
                     "max_concurrent": host.max_concurrent,
@@ -270,4 +277,7 @@ class AnalysisRouter:
                     kata_path=h.get("kata_path", ""),
                     model_path=h.get("model_path"),
                     max_concurrent=h.get("max_concurrent", 3),
+                    host=h.get("host", "localhost"),
+                    port=h.get("port", 22),
+                    user=h.get("user", ""),
                 )

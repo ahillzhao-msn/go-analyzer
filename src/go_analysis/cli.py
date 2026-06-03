@@ -29,6 +29,7 @@ Go Analyzer CLI — 主入口。
 """
 
 import click
+import os
 import sys
 from pathlib import Path
 
@@ -47,7 +48,10 @@ def cli(ctx, config, verbose):
 
     # 延迟加载 ConfigManager
     from go_analysis.config import load_config
-    cfg = load_config(config)
+    path = config or "config.yaml"
+    if not os.path.exists(path):
+        path = None
+    cfg = load_config(path)
     ctx.obj["CFG"] = cfg
 
 
@@ -130,25 +134,50 @@ def host():
 @click.option("--platform", required=True, type=click.Choice(["windows_native", "ssh", "http"]))
 @click.option("--host", default="localhost", help="Host address")
 @click.option("--port", default=22, type=int, help="SSH port")
+@click.option("--user", default=None, help="SSH username")
 @click.option("--kata-path", default=None, help="KataGo path on host")
 @click.option("--model-path", default=None, help="KataGo model path")
 @click.option("--max-concurrent", default=2, type=int, help="Max concurrent tasks")
 @click.pass_context
-def register(ctx, name, platform, host, port, kata_path, model_path, max_concurrent):
-    """注册分析主机"""
+def register(ctx, name, platform, host, port, user, kata_path, model_path, max_concurrent):
+    """注册分析主机并持久化到 config.yaml"""
+    import yaml
+    from pathlib import Path
+
     cfg = ctx.obj["CFG"]
-    host_config = {
+    config_path = ctx.obj.get("CONFIG") or "config.yaml"
+
+    # 读取当前配置
+    path = Path(config_path)
+    if path.exists():
+        with open(path) as f:
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+
+    hosts = config.setdefault("hosts", [])
+
+    # 去重: 同名覆盖
+    for i, h in enumerate(hosts):
+        if h.get("name") == name:
+            hosts.pop(i)
+            break
+
+    hosts.append({
         "name": name,
         "platform": platform,
         "host": host,
         "port": port,
-        "kata_path": kata_path,
-        "model_path": model_path,
+        "user": user or "",
+        "kata_path": kata_path or "",
+        "model_path": model_path or "",
         "max_concurrent": max_concurrent,
-    }
-    click.echo(f"Registering host: {name} ({platform})...")
-    click.echo(f"  Config: {host_config}")
-    click.echo("  (Persistent storage TBD)")
+    })
+
+    with open(path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    click.echo(f"Registered host: {name} ({platform} @ {host}:{port}) → {config_path}")
 
 
 @host.command()
