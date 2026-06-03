@@ -33,8 +33,11 @@ def validate_sgf(sgf_path: str | Path) -> Optional[str]:
     except Exception as e:
         return f"ParseError: {e}"
 
+    # 只取主线
     moves = []
-    for node in tree.nodes_in_tree:
+    node = tree.root
+    while node and node.children:
+        node = node.children[0]
         m = node.move
         if m and not m.is_pass and m.coords is not None:
             moves.append(m)

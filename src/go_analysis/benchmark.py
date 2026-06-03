@@ -136,10 +136,12 @@ def run_benchmark(sgf_content: str, kata_path: str, model_path: str,
             )
             adapter.start()
 
-        # 解析 SGF
+        # 解析 SGF (只取主线)
         tree = SGF.parse(sgf_content)
         all_moves = []
-        for node in tree.nodes_in_tree:
+        node = tree.root
+        while node and node.children:
+            node = node.children[0]
             m = node.move
             if m and not m.is_pass:
                 all_moves.append([m.player, m.gtp()])

@@ -25,16 +25,12 @@ class AnalysisProtocol:
 
     @staticmethod
     def sgf_to_moves(sgf_content: str) -> list:
-        """将 SGF 内容解析为 moves 数组。
-
-        Returns
-        -------
-        list of [player, gtp_coord]
-            e.g. [["B", "Q16"], ["W", "D4"], ...]
-        """
+        """将 SGF 内容解析为 moves 数组 (只取主线)."""
         tree = SGF.parse(sgf_content)
         moves = []
-        for node in tree.nodes_in_tree:
+        node = tree.root
+        while node and node.children:
+            node = node.children[0]  # 取主线 (第一个分支)
             m = node.move
             if m and not m.is_pass:
                 moves.append([m.player, m.gtp()])
