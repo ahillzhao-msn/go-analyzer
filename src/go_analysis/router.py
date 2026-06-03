@@ -127,17 +127,22 @@ class AnalysisRouter:
 
         t0 = time.time()
         try:
-            # 检查二进制是否存在且可执行
-            path = Path(host.kata_path)
-            if not path.exists():
-                raise FileNotFoundError(f"KataGo not found: {path}")
-
-            # 尝试运行 version 命令
-            if host.platform == "windows_native":
-                # Windows exe: 检查是否存在
-                host.alive = path.exists()
-                host.error = None
+            if host.platform == "ssh":
+                # SSH host: check remote process via SSH
+                from .worker_deploy import SshSession
+                ssh = SshSession(host.ssh_host, host.ssh_user, host.ssh_port)
+                r = ssh.run(f"dir \"{host.kata_path}\" 2>nul || exit 1", timeout=timeout_s)
+                host.alive = r.returncode == 0
+                host.error = r.stderr[:200] if r.returncode != 0 else None
             else:
+                # Local host: check binary exists
+                path = Path(host.kata_path)
+                if not path.exists():
+                    raise FileNotFoundError(f"KataGo not found: {path}")
+                host.alive = True
+                host.error = None
+
+        except FileNotFoundError as e:
                 result = subprocess.run(
                     [host.kata_path, "version"],
                     capture_output=True, timeout=timeout_s, text=True

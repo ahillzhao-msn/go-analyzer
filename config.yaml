@@ -11,12 +11,10 @@ analyzer:
   num_analysis_threads: 2
   num_search_threads: 16
   nn_max_batch_size: 8
-
 storage:
   backend: file
   path: ./analysis_store
   compress: true
-
 model:
   name: go-strength-v2
   input_dim: 12
@@ -24,7 +22,6 @@ model:
   num_heads: 4
   num_layers: 3
   num_ranks: 9
-
 training:
   batch_size: 32
   learning_rate: 0.001
@@ -32,7 +29,6 @@ training:
   early_stopping: 10
   incremental: false
   resume_checkpoint: null
-
 hosts:
 - name: kata-wsl-v1.16.4
   platform: windows_native
@@ -43,11 +39,11 @@ hosts:
 - name: bob-pc
   platform: ssh
   host: 192.168.9.31
+  user: xiaoj
   port: 22
   kata_path: ''
   model_path: ''
   max_concurrent: 3
-
 logging:
   level: INFO
   file: null
