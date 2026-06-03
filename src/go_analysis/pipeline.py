@@ -168,7 +168,7 @@ def analyze_and_store(
             try:
                 adapter = create_adapter(
                     platform=host.platform,
-                    katago_path=host.kata_path,
+                    kata_path=host.kata_path,
                     model_path=host.model_path,
                     visits=max_visits,
                 )
@@ -181,7 +181,7 @@ def analyze_and_store(
         print(f"[Pipeline] Creating adapter directly (platform={platform}, visits={max_visits})...")
         adapter = create_adapter(
             platform=platform,
-            katago_path=katago_path,
+            kata_path=katago_path,
             model_path=model_path or None,
             config_path=config_path or None,
             visits=max_visits,
@@ -229,17 +229,17 @@ def analyze_and_store(
                 errors += 1
                 continue
 
-            all_moves = []
-            for player in ("B", "W"):
-                all_moves.extend(extract_features_from_analysis(result.raw_json or {}, player))
-
-            if not all_moves:
+            # 适配器已内部完成特征提取
+            features_list = result.raw_json.get("features_list", [])
+            if not features_list:
                 print(f"  [WARN] No valid moves in {sgf_path}")
                 errors += 1
                 continue
 
-            features = np.stack([m.features for m in all_moves], axis=0)
-            gs = compute_global_stats(all_moves)
+            all_moves = features_list
+
+            features = np.stack([m["features"] for m in all_moves], axis=0)
+            gs = compute_global_stats([type("", (), {"features": m["features"]})() for m in all_moves])
 
             record = AnalysisRecord.compress(features, gs, hw, sw, game)
             store.put(game_id, record)
