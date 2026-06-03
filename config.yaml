@@ -41,9 +41,11 @@ hosts:
   host: 192.168.9.31
   user: xiaoj
   port: 22
-  kata_path: ''
-  model_path: ''
+  kata_path: C:/Users/xiaoj/go-analyzer-worker/katago/katago.exe
+  model_path: C:/Users/xiaoj/go-analyzer-worker/models/kata1-b18c384nbt-s6582191360-d3422816034.bin.gz
   max_concurrent: 3
+  workspace: C:/Users/xiaoj/go-analyzer-worker
+  identity_file: ''
 logging:
   level: INFO
   file: null
