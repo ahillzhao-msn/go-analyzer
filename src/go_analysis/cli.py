@@ -302,54 +302,28 @@ def status(ctx):
 @click.pass_context
 def deploy(ctx, hostname, user, port, identity):
     """SSH部署 KataGo 到远程主机并注册"""
-    from go_analysis.worker_deploy import deploy_ssh
     import yaml
+    from go_analysis.worker_deploy import WorkerDeployer
 
-    cfg = ctx.obj["CFG"]
     config_path = ctx.obj.get("CONFIG") or "config.yaml"
-
-    result = deploy_ssh(
+    deployer = WorkerDeployer()
+    result = deployer.deploy(
         host=hostname,
         user=user or os.environ.get("SSH_USER", "root"),
         port=port,
         identity_file=identity,
     )
 
-    if result["success"]:
-        click.echo(f"\n✅ Deployment successful!")
-        click.echo(f"  Name:    {result['name']}")
-        click.echo(f"  Kata:    {result['kata_path']}")
-        click.echo(f"  Model:   {result['model_path']}")
+    if result.success:
+        click.echo(f"\n✅ Deployed to {result.host}")
+        click.echo(f"  Kata:  {result.kata_path}")
+        click.echo(f"  Model: {result.model_path}")
+        click.echo(f"  GPU:   {result.env.gpu_model or 'N/A'}")
 
-        # 自动注册到 config.yaml
-        path = Path(config_path)
-        if path.exists():
-            with open(path) as f:
-                config = yaml.safe_load(f) or {}
-        else:
-            config = {}
-
-        hosts = config.setdefault("hosts", [])
-        for i, h in enumerate(hosts):
-            if h.get("name") == result["name"]:
-                hosts.pop(i)
-                break
-        hosts.append({
-            "name": result["name"],
-            "platform": "ssh",
-            "host": result["host"],
-            "port": result["port"],
-            "user": result.get("user", ""),
-            "kata_path": result["kata_path"],
-            "model_path": result["model_path"],
-            "max_concurrent": 3,
-        })
-
-        with open(path, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        deployer.save_to_config(result, config_path)
         click.echo(f"  Registered to {config_path}")
     else:
-        click.echo(f"\n❌ Deployment failed. Check SSH connectivity and paths.")
+        click.echo(f"\n❌ Deploy failed: {result.error}")
 
 
 # ── train ─────────────────────────────────────────────
