@@ -150,6 +150,7 @@ def create_adapter(platform: str = None,
     -------
     BaseAdapter
     """
+    import os
     if platform is None:
         platform = auto_detect_adapter()
         print(f"[Adapter] Auto-detected: {platform}")
