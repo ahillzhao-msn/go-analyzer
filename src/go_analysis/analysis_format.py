@@ -299,44 +299,30 @@ class AnalysisRecord:
 # ── 批量存储 ──────────────────────────────────────────────
 
 class AnalysisStore:
-    """批量分析记录的管理器。
+    """批量分析记录的管理器 (兼容原接口, 底层委托 storage 模块).
 
     提供目录级别的存储、检索和统计功能。
     """
 
     def __init__(self, store_dir: str):
-        self.store_dir = store_dir
-        os.makedirs(store_dir, exist_ok=True)
+        from .storage import AnalysisStore as NewStore, FileStorageBackend
+        self._impl = NewStore(FileStorageBackend(store_dir))
+
+    @property
+    def store_dir(self) -> str:
+        return self._impl.store_dir
 
     def put(self, game_id: str, record: AnalysisRecord):
-        """保存一局分析。"""
-        path = os.path.join(self.store_dir, f"{game_id}.npz")
-        record.to_npz(path)
+        self._impl.put(game_id, record)
 
     def get(self, game_id: str) -> Optional[AnalysisRecord]:
-        """取回一局分析。"""
-        path = os.path.join(self.store_dir, f"{game_id}.npz")
-        if not os.path.exists(path):
-            return None
-        return AnalysisRecord.from_npz(path)
+        return self._impl.get(game_id)
 
     def list_games(self) -> list:
-        """返回所有已存储的游戏 ID 列表。"""
-        return sorted(
-            f.removesuffix(".npz")
-            for f in os.listdir(self.store_dir)
-            if f.endswith(".npz")
-        )
+        return self._impl.list_games()
 
     def stats(self) -> dict:
-        """存储统计。"""
-        games = self.list_games()
-        total_bytes = sum(
-            os.path.getsize(os.path.join(self.store_dir, f"{g}.npz"))
-            for g in games
-        )
-        return {
-            "game_count": len(games),
-            "total_mb": total_bytes / 1024 / 1024,
-            "avg_kb": total_bytes / len(games) / 1024 if games else 0,
-        }
+        return self._impl.stats()
+
+    def close(self):
+        self._impl.close()

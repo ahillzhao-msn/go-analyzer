@@ -7,6 +7,7 @@
 from .analysis_format import AnalysisRecord, AnalysisStore, HardwareEnv, SoftwareEnv, GameMeta
 from .config import ConfigManager, load_config
 from .sgf_parser import SGF, Move, SGFNode
+from .storage import StorageBackend, FileStorageBackend, make_store
 
 def __getattr__(name):
     """惰性加载 torch 依赖模块"""

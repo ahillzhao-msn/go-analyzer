@@ -24,7 +24,7 @@ analyzer:
   nn_max_batch_size: 8
 
 storage:
-  backend: file             # file | sqlite | postgres
+  backend: file             # file | sqlite | postgres (your external DB)
   path: ./analysis_store
   compress: true
 
