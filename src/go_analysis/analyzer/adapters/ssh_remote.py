@@ -118,6 +118,12 @@ class SshRemoteAdapter(BaseAdapter):
         visits = visits or self._visits
         game_id = game_id or f"ssh_{hash(self.host) % 10000}_{int(time.time())}"
 
+        # 自动重连: 进程死则重启
+        if not self.is_healthy():
+            print(f"[SSH] Reconnecting {self.host}...")
+            self.shutdown()
+            self.start()
+
         # 解析 SGF → moves 数组
         try:
             from ..protocol import AnalysisProtocol
