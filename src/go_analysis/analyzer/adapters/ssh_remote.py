@@ -118,39 +118,64 @@ class SshRemoteAdapter(BaseAdapter):
         visits = visits or self._visits
         game_id = game_id or f"ssh_{hash(self.host) % 10000}_{int(time.time())}"
 
-        query = json.dumps({
-            "id": game_id,
-            "sgf": sgf_content,
-            "maxVisits": visits,
-            "rules": kwargs.get("rules", "chinese"),
-            "komi": kwargs.get("komi", 7.5),
-            "boardXSize": kwargs.get("board_x", 19),
-            "boardYSize": kwargs.get("board_y", 19),
-            "includePolicy": True,
-        })
-
-        t0 = time.time()
+        # 解析 SGF → moves 数组
         try:
+            from ..protocol import AnalysisProtocol
+            all_moves = AnalysisProtocol.sgf_to_moves(sgf_content)
+        except Exception as e:
+            return AnalysisResult(
+                game_id=game_id, success=False,
+                error=f"SGF parse failed: {e}",
+            )
+
+        if not all_moves:
+            return AnalysisResult(
+                game_id=game_id, success=False,
+                error="No valid moves",
+            )
+
+        total_moves = len(all_moves)
+        t0 = time.time()
+
+        # 逐手发送查询
+        responses = {}
+        for idx in range(total_moves):
+            history = all_moves[:idx]
+            query = AnalysisProtocol.build_query(
+                f"{game_id}_{idx}", history, visits,
+            )
             with self._lock:
                 self._proc.stdin.write(query + "\n")
                 self._proc.stdin.flush()
                 line = self._proc.stdout.readline()
                 if not line:
-                    raise ConnectionError(f"SSH {self.host} stdout closed")
-                response = json.loads(line.strip())
-        except Exception as e:
+                    raise ConnectionError(f"SSH {self.host} stdout closed at move {idx}")
+                resp = json.loads(line.strip())
+                responses[idx] = resp
+
+        # 提取特征
+        features_list = AnalysisProtocol.extract_features_from_moves(
+            all_moves, responses
+        )
+
+        if not features_list:
             return AnalysisResult(
                 game_id=game_id, success=False,
-                error=str(e), duration_s=time.time()-t0,
+                error="No features extracted",
+                duration_s=time.time() - t0,
             )
 
-        move_infos = response.get("moveInfos", [])
+        duration = time.time() - t0
         return AnalysisResult(
             game_id=game_id, success=True,
-            raw_json=response,
-            duration_s=time.time()-t0,
+            raw_json={
+                "features_shape": [len(features_list), 12],
+                "move_count": total_moves,
+                "features_list": features_list,
+            },
+            duration_s=duration,
             visits_used=visits,
-            move_count=len(move_infos),
+            move_count=total_moves,
         )
 
     def info(self) -> dict:
