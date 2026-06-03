@@ -82,6 +82,16 @@ class SshSession:
     def _scp(self, local_path: str, remote_path: str,
              timeout: int = 120) -> bool:
         """SCP 传输文件到远程。"""
+        # Expand ~ to home directory on remote
+        if remote_path.startswith("~/"):
+            try:
+                r = self.run("realpath ~ 2>/dev/null || echo $HOME", timeout=10)
+                home = r.stdout.strip()
+                if home:
+                    remote_path = remote_path.replace("~", home, 1)
+            except Exception:
+                pass  # fallback: keep as-is, might work on some servers
+
         cmd = ["scp", "-o", "StrictHostKeyChecking=no",
                "-P", str(self.port)]
         if self.identity and os.path.exists(self.identity):
@@ -162,6 +172,7 @@ class WorkerDeployer:
 
     def __init__(self, project_root: str | Path = "."):
         self._root = Path(project_root).resolve()
+        self._identity: Optional[str] = None
         self._kata_binary = self._find_kata_binary()
         self._model_file = self._find_model()
         self._config_file = self._find_config()
@@ -171,8 +182,11 @@ class WorkerDeployer:
     def deploy(self, host: str, user: str = "root", port: int = 22,
                identity_file: Optional[str] = None) -> DeployResult:
         """
-        在远程主机上部署 KataGo 分析环境。
+        在远程主机上部署 KataGo 分析环境.
 
+        如果 identity_file 未指定, 从 config.yaml 读取.
+
+        Parameters
         Parameters
         ----------
         host : str
@@ -428,7 +442,6 @@ class WorkerDeployer:
             config = {}
 
         hosts = config.setdefault("hosts", [])
-        # 去重
         hosts[:] = [h for h in hosts if h.get("name") != result.host]
 
         entry = {
@@ -441,6 +454,7 @@ class WorkerDeployer:
             "model_path": result.model_path,
             "max_concurrent": 3,
             "workspace": result.workspace,
+            "identity_file": self._identity or "",
         }
         if result.env:
             entry["env"] = {
