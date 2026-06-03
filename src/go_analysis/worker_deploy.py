@@ -93,6 +93,12 @@ def deploy_ssh(host: str, user: str = "root", port: int = 22,
 
     print(f"[Deploy] Connecting to {user}@{host}:{port}...")
 
+    # ── Step 0: 采集远程环境信息 ──────────────────
+    remote_env = _collect_remote_env(base_cmd, _run)
+    print(f"[Deploy] Remote environment:")
+    for k, v in sorted(remote_env.items()):
+        print(f"    {k}: {v}")
+
     # ── Step 1: 自动发现远程 KataGo ────────────────
     # 检查多个常见路径
     discover_cmd = (
@@ -282,3 +288,102 @@ def _find_local_config(project_root: Path) -> Optional[str]:
         if c.exists():
             return str(c)
     return None
+
+
+# ── 远程环境采集 ──────────────────────────────────
+
+def _collect_remote_env(base_cmd: list, _run) -> dict:
+    """通过 SSH 采集远程主机的硬件/软件环境。
+
+    Returns
+    -------
+    dict
+        os, arch, cpu_model, cpu_cores, ram_gb,
+        gpu_model, gpu_vram, cuda_version,
+        python_version, has_cuda, has_opencl, has_docker
+    """
+    env = {}
+
+    # OS / 架构
+    r = _run("uname -s 2>/dev/null || echo Windows")
+    env["os"] = r.stdout.strip()
+    r = _run("uname -m 2>/dev/null || echo unknown")
+    env["arch"] = r.stdout.strip()
+
+    # CPU
+    r = _run('grep -m1 "model name" /proc/cpuinfo 2>/dev/null || '
+             'wmic cpu get name /format:csv 2>/dev/null | tail -1 || '
+             'echo "CPU:unknown"')
+    env["cpu_model"] = r.stdout.strip().replace("model name : ", "")
+    r = _run("nproc 2>/dev/null || echo 0")
+    env["cpu_cores"] = int(r.stdout.strip() or 0)
+
+    # RAM
+    r = _run("free -g 2>/dev/null | awk '/^Mem:/{print $2}' || "
+             "wmic memorychip get capacity /format:csv 2>/dev/null | tail -1 || "
+             'echo "0"')
+    ram = r.stdout.strip()
+    try:
+        env["ram_gb"] = int(ram) if ram else 0
+    except ValueError:
+        env["ram_gb"] = 0
+
+    # GPU (NVIDIA)
+    r = _run("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || "
+             'echo "no_nvidia"')
+    gpu_info = r.stdout.strip()
+    if gpu_info and "no_nvidia" not in gpu_info:
+        env["gpu_model"] = gpu_info
+        env["has_cuda"] = True
+        # CUDA version
+        r2 = _run("nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo ''")
+        env["cuda_version"] = r2.stdout.strip()
+    else:
+        env["gpu_model"] = ""
+        env["has_cuda"] = False
+        env["cuda_version"] = ""
+
+    # OpenCL
+    r = _run("which clinfo 2>/dev/null && clinfo 2>/dev/null | grep -i 'platform name' || "
+             "echo 'no_opencl'")
+    env["has_opencl"] = "no_opencl" not in r.stdout.strip().lower()
+
+    # Python
+    r = _run("python3 --version 2>/dev/null || python --version 2>/dev/null || echo 'no_python'")
+    env["python_version"] = r.stdout.strip().replace("Python ", "")
+
+    return env
+
+
+# ── KataGo 版本选择 ──────────────────────────────
+
+def _select_kata_version(remote_env: dict, kata_binary: str) -> str:
+    """根据远程环境选择 KataGo 二进制。
+
+    Returns
+    -------
+    str
+        要部署的 KataGo 二进制路径 (本地).
+    """
+    is_linux = "linux" in remote_env.get("os", "").lower()
+    is_windows = "microsoft" in remote_env.get("os", "").lower() or "windows" in remote_env.get("os", "").lower()
+
+    # Windows → 只能用 OpenCL exe
+    if is_windows:
+        if "opencl" in (kata_binary or "").lower():
+            return kata_binary
+        # fallback
+        return os.path.expanduser("~/kata-go/windows/katago-v1.16.5-opencl-windows-x64.exe")
+
+    # Linux
+    if is_linux:
+        if remote_env.get("has_cuda") and "cuda" in (kata_binary or "").lower():
+            return kata_binary
+        elif remote_env.get("has_opencl") and "opencl" in (kata_binary or "").lower():
+            return kata_binary
+        # CPU Eigen — 通用
+        if "eigen" in (kata_binary or "").lower():
+            return kata_binary
+
+    # 默认: 用本机找到的
+    return kata_binary
