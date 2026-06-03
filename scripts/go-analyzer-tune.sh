@@ -52,7 +52,7 @@ case "$GPU_NAME" in
     *)            ATH=2;  STH=16; BS=8;;
 esac
 
-cat > analysis_config.cfg << EOF
+cat > config/analysis_config.cfg << EOF
 logDir = analysis_logs
 reportAnalysisWinratesAs = BLACK
 analysisPVLen = 15
@@ -63,8 +63,8 @@ nnMaxBatchSize = $BS
 EOF
 
 echo "Config generated: $ATH analysis threads, $STH search threads, batch $BS"
-echo "--- analysis_config.cfg ---"
-cat analysis_config.cfg
+echo "--- config/analysis_config.cfg ---"
+cat config/analysis_config.cfg
 
 # 基准测试 (如果提供了 SGF)
 if [ -n "$SGF" ] && [ -f "$SGF" ]; then
