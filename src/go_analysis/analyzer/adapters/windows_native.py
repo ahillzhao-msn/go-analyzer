@@ -234,9 +234,11 @@ class WindowsNativeAdapter(BaseAdapter):
         reader_thread.start()
 
         # 主线程收集响应
+        stall_start = None
         while completed < total_moves and not read_done.is_set():
             try:
                 response = resp_queue.get(timeout=1)
+                stall_start = None  # 有响应, 重置卡死计时
                 resp_id = response.get("id", "")
                 # Extract query_idx from id like "game_42"
                 parts = resp_id.split("_")
@@ -254,6 +256,12 @@ class WindowsNativeAdapter(BaseAdapter):
                         last_report = completed
             except queue.Empty:
                 if completed >= total_moves:
+                    break
+                # 卡死检测: 30秒无新响应 → 退出
+                if stall_start is None:
+                    stall_start = time.time()
+                elif time.time() - stall_start > 30:
+                    print(f"  [WARN] No response for 30s ({completed}/{total_moves}), breaking")
                     break
 
         reader_thread.join(timeout=5)

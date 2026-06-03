@@ -138,7 +138,9 @@ class SshRemoteAdapter(BaseAdapter):
         t0 = time.time()
 
         # 逐手发送查询
+        import select
         responses = {}
+        error_count = 0
         for idx in range(total_moves):
             history = all_moves[:idx]
             query = AnalysisProtocol.build_query(
@@ -147,9 +149,14 @@ class SshRemoteAdapter(BaseAdapter):
             with self._lock:
                 self._proc.stdin.write(query + "\n")
                 self._proc.stdin.flush()
-                line = self._proc.stdout.readline()
+                # 带超时的 readline
+                line = None
+                if self._proc.stdout:
+                    ready = select.select([self._proc.stdout], [], [], 30)
+                    if ready[0]:
+                        line = self._proc.stdout.readline()
                 if not line:
-                    raise ConnectionError(f"SSH {self.host} stdout closed at move {idx}")
+                    raise ConnectionError(f"SSH {self.host} timeout/closed at move {idx}")
                 resp = json.loads(line.strip())
                 responses[idx] = resp
 
