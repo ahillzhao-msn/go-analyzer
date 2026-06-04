@@ -20,12 +20,9 @@ env/
 
 # Project data & config
 analysis_store/
-analysis_store_meta/
-analysis_store_test/
 analysis_logs/
-train_sample/
 checkpoints/
-test_pool_output/
+config.yaml                    # Local configuration (machine-specific)
 *.npz
 *.pt
 
@@ -37,10 +34,13 @@ test_pool_output/
 kata-go/models/*.bin.gz
 kata-go/windows/*.exe
 kata-go/windows/*.dll
-kata-go/windows/v1.16.4/*.exe
-kata-go/windows/v1.16.4/*.dll
 kata-go/windows/KataGoData/
 kata-go/KataGoData/
+
+# Training data (SGFs are data, not code — too large for repo)
+training/*.sgf
+training/*.txt
+training/*.gz
 
 
 # Certificate files (internal infrastructure)
@@ -56,5 +56,11 @@ Thumbs.db
 # Jupyter checkpoints
 .ipynb_checkpoints/
 
+# Backups
+bak/
+
 # Local Bob SGF directory (outside project)
 Bob/
+
+# Training scripts (data-source-specific, not part of core package)
+training/*.py

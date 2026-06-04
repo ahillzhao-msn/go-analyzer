@@ -1,33 +1,24 @@
+"""go_analysis.analyzer — KataGo 抽象适配器
+
+核心设计:
+  - BaseAnalyzer 抽象基类定义接口契约
+  - 实现: LocalAnalyzer, WindowsAnalyzer, RemoteAnalyzer
+  - create_analyzer() 工厂函数根据环境自动选择实现
+  - 包含 tuning/benchmark/discovery 工具
+
+经验总结 (见 DESIGN.md 第 3.2 节):
+  - per-game 独立进程比持久池可靠 (Windows OpenCL 死锁问题)
+  - v1.16.x API 兼容, config/visits 参数化
+  - 环境自动发现优先顺序: WSL→Windows→ENV→PATH
 """
-analyzer 子包 — KataGo 分析引擎的虚拟化适配层。
-
-统一接口，多平台实现，任务调度池。
-
-使用::
-
-    from go_analysis.analyzer import create_adapter
-
-    # 自动选择最佳适配器
-    adapter = create_adapter()
-
-    # 或指定平台
-    adapter = create_adapter(platform="windows_native")
-
-    result = adapter.analyze("game.sgf")
-    adapter.shutdown()
-"""
-
-from .base_adapter import BaseAdapter, AnalysisResult, create_adapter
-from .task import AnalysisTask, TaskState, TaskPriority
-from .pool import AnalysisPool
-from .adapters import WindowsNativeAdapter, SshRemoteAdapter, HttpRemoteAdapter
-from .simple_analyzer import KataGoBatchAnalyzer
+from .base import BaseAnalyzer, AnalysisResult, create_analyzer, extract_12dim_features
+from .local import LocalAnalyzer
+from .windows import WindowsAnalyzer
+from .tuning import benchmark, tune
+from .discovery import discover_katago
 
 __all__ = [
-    "BaseAdapter", "AnalysisResult",
-    "AnalysisTask", "TaskState", "TaskPriority",
-    "AnalysisPool",
-    "WindowsNativeAdapter", "SshRemoteAdapter", "HttpRemoteAdapter",
-    "create_adapter",
-    "KataGoBatchAnalyzer",
+    "BaseAnalyzer", "AnalysisResult", "create_analyzer",
+    "LocalAnalyzer", "WindowsAnalyzer",
+    "benchmark", "tune", "discover_katago",
 ]

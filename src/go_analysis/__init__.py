@@ -1,38 +1,21 @@
-"""Go Analysis package — Transformer + Ordinal Regression for Go strength.
+"""go_analysis — 围棋棋谱分析与段位评估系统。
 
-注意: torch/pytorch 为惰性加载, CLI 启动不受影响。
+核心功能:
+  1. 分析: SGF → KataGo → 12-dim feature NPZ
+  2. 训练: NPZ → GoStrengthModel → 段位预测
+  3. 分布式: 多主机协同分析
+
+架构分层 (从下至上):
+  data/        数据抽象 (source/store/format)
+  analyzer/    KataGo 适配器 (多环境自适应)
+  analysis/    SGF→NPZ 分析管线
+  evaluation/  模型训练与推理 [torch]
+  api/         CLI + Python API
+  distributed/ 分布式框架 (coordinator/worker/sync/deploy)
 """
+from .api import analyze_sgf, evaluate_game, train_model, discover
+from .data.format import AnalysisRecord, GameMeta, HardwareEnv, SoftwareEnv
+from .data.source import BaseSource, FolderSource, SourceRegistry
+from .data.store import BaseStore, NpzStore, StoreRegistry
 
-# 轻量模块 — 无 torch 依赖
-from .analysis_format import AnalysisRecord, AnalysisStore, HardwareEnv, SoftwareEnv, GameMeta
-from .config import ConfigManager, load_config
-from .sgf_parser import SGF, Move, SGFNode
-from .storage import StorageBackend, FileStorageBackend, make_store
-
-def __getattr__(name):
-    """惰性加载 torch 依赖模块"""
-    _lazy = {}
-    if name == 'GoStrengthModel':
-        from .model_v2 import GoStrengthModel
-        _lazy[name] = GoStrengthModel
-    elif name in ('GoMoveData', 'GoGameData', 'extract_features_from_analysis', 'compute_global_stats'):
-        from .models import GoMoveData, GoGameData, extract_features_from_analysis, compute_global_stats
-        _lazy.update(locals())
-    elif name == 'GoDataset':
-        from .dataset import GoDataset
-        _lazy[name] = GoDataset
-    elif name == 'ModelRegistry':
-        from .model_registry import ModelRegistry
-        _lazy[name] = ModelRegistry
-    if name in _lazy:
-        return _lazy[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-__all__ = [
-    'AnalysisRecord', 'AnalysisStore', 'HardwareEnv', 'SoftwareEnv', 'GameMeta',
-    'ConfigManager', 'load_config',
-    'SGF', 'Move', 'SGFNode',
-    'GoStrengthModel', 'GoMoveData', 'GoGameData',
-    'extract_features_from_analysis', 'compute_global_stats',
-    'GoDataset', 'ModelRegistry',
-]
+__version__ = "0.2.0"
