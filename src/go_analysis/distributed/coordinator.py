@@ -32,6 +32,8 @@ class Coordinator:
         self._worker_done: dict[str, set[str]] = {}
         self._assigned: dict[str, dict] = {}
         self._all_games: list[tuple[str, str]] = []  # (game_id, group)
+        self._perf_history: list[dict] = []           # 性能采样历史
+        self._last_sample_time = 0.0
         self._scan_all()
 
     def _scan_all(self):
@@ -115,21 +117,42 @@ class Coordinator:
         return {"status": "ok"}
 
     def stats(self) -> dict:
-        """全量状态。"""
+        """全量状态 + 性能采样。"""
         with self._lock:
             self._cleanup_stale()
             done = self._known_done()
             completed_total = len(done)
+            now = time.time()
+
+            # 每 60s 采样一次性能
+            if now - self._last_sample_time > 60:
+                total_vps = sum(
+                    w.get("perf", {}).get("vps_moving_avg", 0)
+                    for w in self._workers.values()
+                )
+                self._perf_history.append({
+                    "time": now,
+                    "done": completed_total,
+                    "remaining": max(0, len(self._all_games) - completed_total - len(self._assigned)),
+                    "total_vps": round(total_vps, 1),
+                    "workers": len(self._workers),
+                })
+                if len(self._perf_history) > 100:  # 保留最近 100 个采样 (100分钟)
+                    self._perf_history.pop(0)
+                self._last_sample_time = now
+
             return {
                 "total": len(self._all_games),
                 "done": completed_total,
                 "assigned": len(self._assigned),
                 "remaining": max(0, len(self._all_games) - completed_total - len(self._assigned)),
+                "progress_pct": round(completed_total / max(len(self._all_games), 1) * 100, 1),
                 "workers": {wid: {
                     "store": w.get("store_dir", ""),
-                    "last_seen_s": round(time.time() - w.get("last_seen", 0), 1),
+                    "last_seen_s": round(now - w.get("last_seen", 0), 1),
                     "perf": w.get("perf", {}),
                 } for wid, w in self._workers.items()},
+                "perf_history": self._perf_history[-20:],  # 最后 20 个采样点
             }
 
     def _cleanup_stale(self, timeout: float = 120):
@@ -186,8 +209,10 @@ class Coordinator:
                         self._respond(200, result)
                     else:
                         self._respond(204, {})
-                elif path == "/stats":
+                elif path in ("/stats", "/api/stats"):
                     self._respond(200, coord.stats())
+                elif path in ("/", "/dashboard"):
+                    self._respond_html(200, _render_dashboard(coord.stats()))
                 else:
                     self._respond(404, {"error": "not_found"})
 
@@ -196,6 +221,12 @@ class Coordinator:
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps(data).encode())
+
+            def _respond_html(self, code, html: str):
+                self.send_response(code)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode())
 
             def log_message(self, fmt, *args):
                 pass  # suppress HTTP log noise
@@ -209,6 +240,93 @@ class Coordinator:
             server.serve_forever()
         except KeyboardInterrupt:
             server.shutdown()
+
+
+def _render_dashboard(stats: dict) -> str:
+    """生成 HTML Dashboard。"""
+    w = stats.get("workers", {})
+    hist = stats.get("perf_history", [])
+
+    # 性能趋势图 (内联 SVG 条形图)
+    bar_chart = ""
+    if hist:
+        max_vps = max(h.get("total_vps", 0) for h in hist) or 1
+        bars = []
+        for h in hist[-20:]:
+            pct = h.get("total_vps", 0) / max_vps * 100
+            bars.append(
+                f'<div style="display:flex;align-items:center;margin:1px 0">'
+                f'<span style="width:40px;font-size:10px;color:#888">{h.get("done", 0)}</span>'
+                f'<div style="width:{pct:.0f}%;min-width:4px;height:12px;'
+                f'background:{"#4ade80" if h.get("total_vps",0) > 200 else "#fbbf24"};'
+                f'border-radius:2px"></div>'
+                f'<span style="margin-left:4px;font-size:10px">{h.get("total_vps",0):.0f} vps</span>'
+                f'</div>'
+            )
+        bar_chart = "\n".join(bars)
+
+    worker_rows = ""
+    for wid, info in sorted(w.items()):
+        p = info.get("perf", {})
+        g = p.get("games_analyzed", 0)
+        vps = p.get("vps_moving_avg", 0)
+        last = p.get("last_10", [])
+        last_game = last[-1].get("game_id", "")[:30] if last else "-"
+        worker_rows += f"""
+        <tr>
+            <td style="padding:4px 8px">{wid}</td>
+            <td style="padding:4px 8px">{g}</td>
+            <td style="padding:4px 8px">{vps:.1f}</td>
+            <td style="padding:4px 8px;font-size:12px;color:#aaa">{last_game}</td>
+        </tr>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><meta http-equiv="refresh" content="15">
+<title>Go Analyzer Dashboard</title>
+<style>
+body {{ font-family: 'SF Mono', 'Cascadia Code', monospace; background: #1a1a2e; color: #e0e0e0; margin: 20px; }}
+h1 {{ color: #4ade80; font-size: 20px; }}
+h2 {{ color: #fbbf24; font-size: 14px; margin-top: 20px; }}
+.card {{ background: #16213e; border-radius: 8px; padding: 16px; margin: 8px 0; }}
+.stat {{ display: inline-block; margin: 0 20px 8px 0; }}
+.stat-val {{ font-size: 28px; font-weight: bold; color: #4ade80; }}
+.stat-label {{ font-size: 11px; color: #888; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; color: #888; font-size: 11px; }}
+td {{ padding: 4px 8px; border-bottom: 1px solid #222; font-size: 13px; }}
+.bar-container {{ margin: 8px 0; }}
+</style>
+</head><body>
+<h1>⚫ Go Analyzer · 分析进度</h1>
+<div class="card">
+    <div class="stat"><div class="stat-val">{stats.get("done", 0)}</div><div class="stat-label">完成</div></div>
+    <div class="stat"><div class="stat-val">{stats.get("remaining", 0)}</div><div class="stat-label">剩余</div></div>
+    <div class="stat"><div class="stat-val">{stats.get("progress_pct", 0)}%</div><div class="stat-label">进度</div></div>
+    <div class="stat"><div class="stat-val">{len(w)}</div><div class="stat-label">Worker</div></div>
+</div>
+
+<h2>📊 Workers</h2>
+<div class="card">
+<table>
+<tr><th>ID</th><th>Games</th><th>VPS</th><th>Last</th></tr>
+{worker_rows}
+</table>
+</div>
+
+<h2>📈 VPS 趋势 (最近 20 采样)</h2>
+<div class="card bar-container">{bar_chart or "<span style='color:#666'>等待数据...</span>"}</div>
+
+<h2>📋 接口</h2>
+<div class="card" style="font-size:12px;color:#aaa">
+    <div>/dashboard — 本页</div>
+    <div>/stats    — JSON 状态</div>
+</div>
+<p style="font-size:10px;color:#555;margin-top:20px">
+    自动刷新: 15s / 更新时间: {time.strftime("%H:%M:%S")}
+</p>
+</body></html>"""
+
 
 
 def main():
@@ -231,3 +349,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
