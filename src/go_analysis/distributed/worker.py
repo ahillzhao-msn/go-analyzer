@@ -38,7 +38,9 @@ class Worker:
                  visits: int = 25, min_moves: int = 10,
                  poll_interval: float = 5.0,
                  sync_port: int = 18083,
-                 coordinator_url: Optional[str] = None):
+                 coordinator_url: Optional[str] = None,
+                 katago_max_games: int = 50,
+                 katago_max_age: int = 1800):
         self.sgf_dir = Path(sgf_dir)
         self.store_dir = Path(store_dir)
         self.katago_path = katago_path
@@ -53,38 +55,70 @@ class Worker:
         self._skipped: set[str] = set()  # 已跳过的棋谱 (少于 min_moves)
         self._stop = False
 
-    def _fresh_perf(self) -> dict:
-        return {
-            "games_analyzed": 0, "total_moves": 0, "total_duration_s": 0.0,
-            "total_visits": 0, "vps_moving_avg": 0.0, "last_10": [],
-        }
+        # KataGo 批量常驻管理
+        self._katago_max_games = katago_max_games
+        self._katago_max_age = katago_max_age
+        self._analyzer = None  # 惰性创建
+        self._analyzer_games = 0
+        self._analyzer_start = 0.0
 
-    # ── 核心分析逻辑 (委托给 Analyzer + Pipeline) ──
-
-    def analyze_game(self, game_id: str, sgf_path: Path) -> dict:
-        """分析一局棋谱 — 委托给 Pipeline + Analyzer 抽象完成。
-
-        所有 KataGo 进程管理在 analyzer/ 层单点维护。
-        """
-        from ..analysis import Pipeline
-        from ..analyzer import create_analyzer, discover_katago
-        from ..data.source import FolderSource
-        from ..data.store import NpzStore
-
-        # 创建适配器
+    def _create_analyzer(self):
+        """创建或重建 KataGo analyzer。"""
+        from ..analyzer import create_analyzer
         analyzer_type = "windows" if ".exe" in self.katago_path else "local"
-        analyzer = create_analyzer(
+        self._analyzer = create_analyzer(
             analyzer_type,
             katago_path=self.katago_path,
             model_path=self.model_path,
             config_path=self.config_path,
             visits=self.visits,
         )
+        self._analyzer_games = 0
+        self._analyzer_start = time.time()
+        log.info(f"KataGo process started (type={analyzer_type})")
+
+    def _need_restart(self) -> bool:
+        """判断是否需要重启 KataGo 进程。"""
+        if self._analyzer is None:
+            return True
+        if self._analyzer_games >= self._katago_max_games:
+            log.info(f"KataGo restart: {self._analyzer_games} games reached limit ({self._katago_max_games})")
+            return True
+        age = time.time() - self._analyzer_start
+        if age >= self._katago_max_age:
+            log.info(f"KataGo restart: age {age:.0f}s reached limit ({self._katago_max_age}s)")
+            return True
+        return False
+
+    def _fresh_perf(self) -> dict:
+        return {
+            "games_analyzed": 0, "total_moves": 0, "total_duration_s": 0.0,
+            "total_visits": 0, "vps_moving_avg": 0.0, "last_10": [],
+        }
+
+    # ── 核心分析逻辑 (委托给 Analyzer + Pipeline, 复用 KataGo 进程) ──
+
+    def analyze_game(self, game_id: str, sgf_path: Path) -> dict:
+        """分析一局棋谱 — 复用常驻 KataGo 进程。
+
+        每 --katago-max-games 局或 --katago-max-age 秒重启一次 KataGo，
+        兼顾效率和防死锁。
+        """
+        from ..analysis import Pipeline
+        from ..data.source import FolderSource
+        from ..data.store import NpzStore
+
+        # 检查是否需要重启 KataGo
+        if self._need_restart():
+            self._create_analyzer()
+        assert self._analyzer is not None, "KataGo analyzer should be initialized"
+
         source = FolderSource(str(self.sgf_dir))
         store = NpzStore(str(self.store_dir))
-        pipe = Pipeline(analyzer, source, store,
+        pipe = Pipeline(self._analyzer, source, store,
                         visits=self.visits, min_moves=self.min_moves)
         result = pipe.run_one(game_id)
+        self._analyzer_games += 1
         return {
             "game_id": game_id,
             "status": result["status"],
@@ -342,6 +376,10 @@ def main():
                         help="日志目录 (默认空=仅控制台)")
     parser.add_argument("--log-level", default="INFO",
                         help="日志级别 (DEBUG/INFO/WARNING/ERROR)")
+    parser.add_argument("--katago-max-games", type=int, default=50,
+                        help="每个 KataGo 进程最大分析局数 (默认 50)")
+    parser.add_argument("--katago-max-age", type=int, default=1800,
+                        help="每个 KataGo 进程最大存活秒数 (默认 1800=30min)")
     args = parser.parse_args()
 
     setup_logging(args.log_dir, args.log_level)
@@ -358,6 +396,8 @@ def main():
         min_moves=args.min_moves, poll_interval=args.poll_interval,
         sync_port=args.sync_port,
         coordinator_url=args.coordinator_url,
+        katago_max_games=args.katago_max_games,
+        katago_max_age=args.katago_max_age,
     )
 
     if args.serve_only:

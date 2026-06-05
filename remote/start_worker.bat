@@ -1,12 +1,11 @@
 @echo off
 REM ============================================================
-REM start_worker.bat — 启动 Worker (后台 pythonw)
+REM start_worker.bat — 启动 Worker (后台 pythonw, KataGo 常驻)
 REM v0.4.0
-REM 用法: 双击运行, 或通过 SCHTASKS 调度
+REM KataGo 每 50 局或 30 分钟重启一次（兼顾效率与防死锁）
 REM ============================================================
 cd /d "%~dp0"
 
-REM 配置
 set SGF_DIR=training
 set STORE_DIR=analysis_store
 set KATAGO=katago\katago.exe
@@ -15,11 +14,8 @@ set CONFIG=analysis_config.cfg
 set VISITS=25
 set SYNC_PORT=18083
 set LOG_DIR=logs
-
-REM Coordinator 地址 — 改为本地 coordinator (127.0.0.1)
 set COORD_URL=http://127.0.0.1:18081
 
-REM 启动 Worker (无控制台窗口)
 start "" /B pythonw -m go_analysis.distributed.worker ^
     --sgf-dir %SGF_DIR% ^
     --store-dir %STORE_DIR% ^
@@ -30,9 +26,11 @@ start "" /B pythonw -m go_analysis.distributed.worker ^
     --sync-port %SYNC_PORT% ^
     --coordinator-url %COORD_URL% ^
     --log-dir %LOG_DIR% ^
-    --log-level INFO
+    --log-level INFO ^
+    --katago-max-games 50 ^
+    --katago-max-age 1800
 
-echo Worker started
+echo Worker started (KataGo persistent, restarts every 50 games)
 echo SGF: %SGF_DIR%
 echo Store: %STORE_DIR%
 echo Log: %LOG_DIR%\worker.log
