@@ -14,7 +14,7 @@
 from .base import BaseAnalyzer, AnalysisResult, create_analyzer, extract_12dim_features
 from .local import LocalAnalyzer
 from .windows import WindowsAnalyzer
-from .tuning import benchmark, tune
+from .tuning import benchmark, tune, tune_gpu
 from .discovery import discover_katago
 
 __all__ = [

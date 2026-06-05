@@ -6,19 +6,23 @@
   - 分析结果保存到本地 store
   - 暴露 HTTP 状态接口供 coordinator 轮询
 
-Coordinator 通过心跳轮询拉取状态和同步结果:
-  GET /status  →  返回当前进度、性能统计
-  POST /sync   →  coordinator 拉取未同步的结果
+Coordinator 集成:
+  - 通过 --coordinator-url 注册状态端点 (POST /register-worker-status)
+  - 后台心跳线程定期向 coordinator 注册自身
+  - Coordinator 通过 GET /status 轮询拉取状态
 """
 import argparse
 import json
 import logging
 import os
+import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 log = logging.getLogger("worker")
 
@@ -31,7 +35,8 @@ class Worker:
                  config_path: Optional[str] = None,
                  visits: int = 25, min_moves: int = 10,
                  poll_interval: float = 5.0,
-                 sync_port: int = 18083):
+                 sync_port: int = 18083,
+                 coordinator_url: Optional[str] = None):
         self.sgf_dir = Path(sgf_dir)
         self.store_dir = Path(store_dir)
         self.katago_path = katago_path
@@ -41,6 +46,7 @@ class Worker:
         self.min_moves = min_moves
         self.poll_interval = poll_interval
         self.sync_port = sync_port
+        self.coordinator_url = coordinator_url
         self._perf = self._fresh_perf()
         self._stop = False
 
@@ -122,17 +128,36 @@ class Worker:
         log.info(f"Worker starting (self-sufficient mode)")
         self._stop = False
 
+        # 启动 coordinator 注册心跳 (如果配置了 coordinator)
+        if self.coordinator_url:
+            def _coord_hb():
+                while not self._stop:
+                    try:
+                        self._register_with_coordinator()
+                    except Exception:
+                        pass
+                    time.sleep(60)
+            t = threading.Thread(target=_coord_hb, daemon=True)
+            t.start()
+            log.info(f"Coordinator heartbeat thread started -> {self.coordinator_url}")
+
         while not self._stop:
-            pending = self._scan_unprocessed()
-            if not pending:
+            # 构建 game_id → path 映射 (避免每局独立 rglob)
+            from ..data.source import FolderSource
+            from ..data.store import NpzStore
+            source = FolderSource(str(self.sgf_dir))
+            store = NpzStore(str(self.store_dir))
+            done = set(store.list())
+            game_paths = {}
+            for gid, path_str, _ in source._scan():
+                if gid not in done:
+                    game_paths[gid] = Path(path_str)
+
+            if not game_paths:
                 time.sleep(self.poll_interval)
                 continue
 
-            game_id = pending[0]
-            sgf_path = self._find_sgf(game_id)
-            if not sgf_path:
-                log.warning(f"SGF not found: {game_id}")
-                continue
+            game_id, sgf_path = next(iter(game_paths.items()))
 
             result = self.analyze_game(game_id, sgf_path)
             if result["status"] == "ok":
@@ -158,14 +183,59 @@ class Worker:
         """返回当前状态, coordinator 通过 HTTP GET 获取。"""
         from ..data.store import NpzStore
         store = NpzStore(str(self.store_dir))
+        try:
+            wid = os.uname().nodename
+        except AttributeError:
+            wid = os.environ.get("COMPUTERNAME", "unknown")
         return {
-            "worker_id": os.uname().nodename,
+            "worker_id": wid,
             "status": "running" if not self._stop else "stopped",
             "local_store": str(self.store_dir),
             "local_sgfs": str(self.sgf_dir),
             "games_in_store": store.count(),
             "perf": self._perf,
         }
+
+    def _register_with_coordinator(self):
+        """向 coordinator 注册自身状态端点。"""
+        if not self.coordinator_url:
+            return
+        try:
+            try:
+                wid = os.uname().nodename
+            except AttributeError:
+                wid = os.environ.get("COMPUTERNAME", "unknown")
+            status_url = f"http://{self._get_host_ip()}:{self.sync_port}"
+            data = json.dumps({
+                "worker_id": wid,
+                "status_url": status_url,
+                "store_dir": str(self.store_dir),
+            }).encode()
+            req = Request(f"{self.coordinator_url}/register-worker-status",
+                          data=data, method="POST",
+                          headers={"Content-Type": "application/json"})
+            with urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+                if result.get("status") == "ok":
+                    log.debug(f"Registered with coordinator: {wid} @ {status_url}")
+                return result
+        except (URLError, json.JSONDecodeError, OSError) as e:
+            log.warning(f"Coordinator registration failed: {e}")
+            return None
+
+    def _get_host_ip(self) -> str:
+        """获取本机 IP (用于注册状态 URL)。"""
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1)
+            # 连接一个公网地址但不发数据, 仅用于获取本机 IP
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
 
     def serve_status(self):
         """启动 HTTP 状态服务 (供 coordinator 轮询)。"""
@@ -230,9 +300,16 @@ def main():
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--sync-port", type=int, default=18083,
                         help="状态服务端口 (供 coordinator 轮询)")
+    parser.add_argument("--coordinator-url", default=None,
+                        help="Coordinator 地址 (如 http://192.168.9.32:18081), 可选")
     parser.add_argument("--serve-only", action="store_true",
                         help="仅启动状态服务, 不执行分析")
     args = parser.parse_args()
+
+    try:
+        default_wid = os.uname().nodename
+    except AttributeError:
+        default_wid = os.environ.get("COMPUTERNAME", "unknown")
 
     worker = Worker(
         sgf_dir=args.sgf_dir, store_dir=args.store_dir,
@@ -240,6 +317,7 @@ def main():
         config_path=args.config, visits=args.visits,
         min_moves=args.min_moves, poll_interval=args.poll_interval,
         sync_port=args.sync_port,
+        coordinator_url=args.coordinator_url,
     )
 
     if args.serve_only:
