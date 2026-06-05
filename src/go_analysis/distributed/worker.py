@@ -1,37 +1,37 @@
-"""Worker — 分布式分析工人代理。
+"""Worker — 完全自持的本地分析工人。
 
-循环: register → assign → analyze → complete
-本地自持运行，零运行时依赖中心。
+架构哲学:
+  - Worker 不依赖任何外部服务 (coordinator 可选)
+  - 仅监控本地 SGF 缓存, 自动分析未处理的棋谱
+  - 分析结果保存到本地 store
+  - 暴露 HTTP 状态接口供 coordinator 轮询
 
-经验 (ROADMAP.md §2, §4):
-  - per-game 独立 KataGo 进程 (避免死锁)
-  - 注册时自报 done_games 去重
-  - 不足 50 手标记 skip (非失败)
-  - SCHTASKS 定时任务保持存活 (72h)
+Coordinator 通过心跳轮询拉取状态和同步结果:
+  GET /status  →  返回当前进度、性能统计
+  POST /sync   →  coordinator 拉取未同步的结果
 """
 import argparse
 import json
 import logging
 import os
 import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 log = logging.getLogger("worker")
 
 
 class Worker:
-    """分布式分析工人。"""
+    """完全自持的本地分析工人。"""
 
-    def __init__(self, coordinator_url: str, worker_id: str,
-                 sgf_dir: str, store_dir: str,
+    def __init__(self, sgf_dir: str, store_dir: str,
                  katago_path: str, model_path: str,
                  config_path: Optional[str] = None,
                  visits: int = 25, min_moves: int = 10,
-                 poll_interval: float = 2.0):
-        self.coordinator_url = coordinator_url.rstrip("/")
-        self.worker_id = worker_id
+                 poll_interval: float = 5.0,
+                 sync_port: int = 18083):
         self.sgf_dir = Path(sgf_dir)
         self.store_dir = Path(store_dir)
         self.katago_path = katago_path
@@ -40,39 +40,25 @@ class Worker:
         self.visits = visits
         self.min_moves = min_moves
         self.poll_interval = poll_interval
-        self._done_games: set[str] = set()
+        self.sync_port = sync_port
+        self._perf = self._fresh_perf()
+        self._stop = False
 
-    # ── HTTP 通信 ──
+    def _fresh_perf(self) -> dict:
+        return {
+            "games_analyzed": 0, "total_moves": 0, "total_duration_s": 0.0,
+            "total_visits": 0, "vps_moving_avg": 0.0, "last_10": [],
+        }
 
-    def _post(self, endpoint: str, data: dict) -> dict:
-        url = f"{self.coordinator_url}{endpoint}"
-        body = json.dumps(data).encode()
-        req = Request(url, data=body, headers={"Content-Type": "application/json"})
-        resp = urlopen(req, timeout=30)
-        return json.loads(resp.read().decode())
-
-    def _get(self, endpoint: str) -> Optional[dict]:
-        url = f"{self.coordinator_url}{endpoint}"
-        req = Request(url)
-        try:
-            resp = urlopen(req, timeout=30)
-            if resp.status == 204:
-                return None
-            return json.loads(resp.read().decode())
-        except Exception:
-            return None
-
-    # ── 分析 (委托给 Pipeline + Analyzer 抽象) ──
+    # ── 核心分析逻辑 (委托给 Analyzer + Pipeline) ──
 
     def analyze_game(self, game_id: str, sgf_path: Path) -> dict:
-        """分析一局棋谱 — 委托给 Pipeline 完成。
+        """分析一局棋谱 — 委托给 Pipeline + Analyzer 抽象完成。
 
-        使用虚拟化的 analyzer 适配器 + 管线抽象,
-        单点维护 KataGo 进程管理逻辑 (分析器各子类)。
+        所有 KataGo 进程管理在 analyzer/ 层单点维护。
         """
         from ..analysis import Pipeline
-        from ..analysis.sgf_parser import extract_main_line
-        from ..analyzer import create_analyzer
+        from ..analyzer import create_analyzer, discover_katago
         from ..data.source import FolderSource
         from ..data.store import NpzStore
 
@@ -99,75 +85,141 @@ class Worker:
             "error": result.get("error", ""),
         }
 
-    # ── 主循环 ──
+    # ── 本地分析循环 (纯自持) ────────────────────────
 
-    def _scan_local_store(self) -> list[str]:
-        """扫描本地 store 中已有的结果。"""
+    def _find_sgf(self, game_id: str) -> Optional[Path]:
+        for ext in [".sgf", ".sgf.gz"]:
+            for f in self.sgf_dir.rglob(f"{game_id}{ext}"):
+                return f
+        p = self.sgf_dir / f"{game_id}.sgf"
+        return p if p.exists() else None
+
+    def _scan_unprocessed(self) -> list[str]:
+        """返回本地 SGF 中尚未分析的 game_id 列表。"""
+        from ..data.source import FolderSource
         from ..data.store import NpzStore
-        return NpzStore(str(self.store_dir)).list()
+        source = FolderSource(str(self.sgf_dir))
+        store = NpzStore(str(self.store_dir))
+        done = set(store.list())
+        return [gid for gid in source.list_games() if gid not in done]
+
+    def _update_perf(self, game_id: str, moves: int, dt: float, vps: float):
+        self._perf["games_analyzed"] += 1
+        self._perf["total_moves"] += moves
+        self._perf["total_duration_s"] += dt
+        self._perf["total_visits"] += moves * self.visits
+        self._perf["vps_moving_avg"] = round(
+            self._perf["total_visits"] / max(self._perf["total_duration_s"], 0.1), 1)
+        self._perf["last_10"].append({
+            "game_id": game_id, "moves": moves,
+            "duration_s": round(dt, 2), "vps": vps,
+        })
+        if len(self._perf["last_10"]) > 10:
+            self._perf["last_10"].pop(0)
 
     def run(self):
-        """Worker 主循环: register → assign → analyze → complete。"""
-        log.info(f"Worker {self.worker_id} starting")
+        """主循环: 纯本地分析, 无外部依赖。"""
+        log.info(f"Worker starting (self-sufficient mode)")
+        self._stop = False
 
-        # 1. 注册 + 自报已有结果
-        done_games = self._scan_local_store()
-        resp = self._post("/register", {
-            "worker_id": self.worker_id,
-            "store_dir": str(self.store_dir),
-            "done_games": done_games,
-        })
-        log.info(f"registered: total={resp.get('total')} "
-                 f"done={resp.get('done')} remaining={resp.get('remaining')}")
-
-        # 2. 主循环
-        while True:
-            task = self._get(f"/assign?worker_id={self.worker_id}")
-            if task is None:
+        while not self._stop:
+            pending = self._scan_unprocessed()
+            if not pending:
                 time.sleep(self.poll_interval)
                 continue
 
-            game_id = task["game_id"]
-            group = task.get("group", "")
-            sgf_path = self.sgf_dir / group / f"{game_id}.sgf"
-            if not sgf_path.exists():
-                sgf_path = self.sgf_dir / f"{game_id}.sgf"
-
-            if not sgf_path.exists():
+            game_id = pending[0]
+            sgf_path = self._find_sgf(game_id)
+            if not sgf_path:
                 log.warning(f"SGF not found: {game_id}")
-                self._post("/complete", {
-                    "game_id": game_id,
-                    "worker_id": self.worker_id,
-                    "success": False, "move_count": 0, "duration_s": 0,
-                })
                 continue
 
             result = self.analyze_game(game_id, sgf_path)
-
-            status_ok = result["status"] in ("ok", "skip")
-            self._post("/complete", {
-                "game_id": game_id,
-                "worker_id": self.worker_id,
-                "success": status_ok,
-                "move_count": result.get("moves", 0),
-                "duration_s": result.get("duration_s", 0),
-                "store_path": result.get("path", ""),
-            })
-
             if result["status"] == "ok":
-                log.info(f"✓ {game_id}: {result.get('moves', 0)} moves "
-                         f"({result.get('duration_s', 0):.1f}s)")
+                moves = result.get("moves", 0)
+                dt = result.get("duration_s", 0)
+                vps = round(moves * self.visits / dt, 1) if dt > 0 else 0
+                self._update_perf(game_id, moves, dt, vps)
+                done = self._perf["games_analyzed"]
+                log.info(f"✓ [{done}] {game_id}: {moves}m {dt:.1f}s {vps} vps")
             elif result["status"] == "skip":
                 log.info(f"  {game_id}: skip ({result.get('reason', '')})")
             else:
                 log.warning(f"✗ {game_id}: {result.get('error', 'unknown')}")
 
+        log.info("Worker stopped")
+
+    def stop(self):
+        self._stop = True
+
+    # ── 同步状态接口 (供 coordinator 轮询) ────────────
+
+    def status(self) -> dict:
+        """返回当前状态, coordinator 通过 HTTP GET 获取。"""
+        from ..data.store import NpzStore
+        store = NpzStore(str(self.store_dir))
+        return {
+            "worker_id": os.uname().nodename,
+            "status": "running" if not self._stop else "stopped",
+            "local_store": str(self.store_dir),
+            "local_sgfs": str(self.sgf_dir),
+            "games_in_store": store.count(),
+            "perf": self._perf,
+        }
+
+    def serve_status(self):
+        """启动 HTTP 状态服务 (供 coordinator 轮询)。"""
+        worker = self
+
+        class StatusHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = urlparse(self.path).path
+                if path == "/status":
+                    self._respond(200, worker.status())
+                else:
+                    self._respond(404, {"error": "not_found"})
+
+            def do_POST(self):
+                path = urlparse(self.path).path
+                if path == "/sync":
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(length).decode() if length else "{}"
+                    data = json.loads(body) if body else {}
+                    # coordinator 发起同步请求
+                    from ..data.store import NpzStore
+                    store = NpzStore(str(worker.store_dir))
+                    games = store.list()
+                    synced = data.get("already_have", [])
+                    new_games = [g for g in games if g not in synced]
+                    self._respond(200, {
+                        "worker_id": os.uname().nodename,
+                        "total_in_store": len(games),
+                        "new_games": new_games[:100],
+                        "new_count": len(new_games),
+                    })
+                else:
+                    self._respond(404, {"error": "not_found"})
+
+            def _respond(self, code, data):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(data).encode())
+
+            def log_message(self, fmt, *args):
+                pass
+
+        server = HTTPServer(("0.0.0.0", self.sync_port), StatusHandler)
+        log.info(f"Status server on :{self.sync_port}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            server.shutdown()
+
 
 def main():
     """命令行入口: python -m go_analysis.distributed.worker"""
-    parser = argparse.ArgumentParser(description="Go Analyzer Worker")
-    parser.add_argument("--coordinator", default="http://localhost:18081")
-    parser.add_argument("--worker-id", default=None)
+    parser = argparse.ArgumentParser(description="Go Analyzer Worker (self-sufficient)")
     parser.add_argument("--sgf-dir", default="./training")
     parser.add_argument("--store-dir", default="./analysis_store")
     parser.add_argument("--katago", required=True)
@@ -175,24 +227,31 @@ def main():
     parser.add_argument("--config", default=None)
     parser.add_argument("--visits", type=int, default=25)
     parser.add_argument("--min-moves", type=int, default=10)
-    parser.add_argument("--poll-interval", type=float, default=2.0)
+    parser.add_argument("--poll-interval", type=float, default=5.0)
+    parser.add_argument("--sync-port", type=int, default=18083,
+                        help="状态服务端口 (供 coordinator 轮询)")
+    parser.add_argument("--serve-only", action="store_true",
+                        help="仅启动状态服务, 不执行分析")
     args = parser.parse_args()
 
-    worker_id = args.worker_id or f"worker-{os.uname().nodename}"
-
     worker = Worker(
-        coordinator_url=args.coordinator,
-        worker_id=worker_id,
-        sgf_dir=args.sgf_dir,
-        store_dir=args.store_dir,
-        katago_path=args.katago,
-        model_path=args.model,
-        config_path=args.config,
-        visits=args.visits,
-        min_moves=args.min_moves,
-        poll_interval=args.poll_interval,
+        sgf_dir=args.sgf_dir, store_dir=args.store_dir,
+        katago_path=args.katago, model_path=args.model,
+        config_path=args.config, visits=args.visits,
+        min_moves=args.min_moves, poll_interval=args.poll_interval,
+        sync_port=args.sync_port,
     )
-    worker.run()
+
+    if args.serve_only:
+        worker.serve_status()
+    else:
+        import threading
+        t = threading.Thread(target=worker.serve_status, daemon=True)
+        t.start()
+        try:
+            worker.run()
+        except KeyboardInterrupt:
+            worker.stop()
 
 
 if __name__ == "__main__":

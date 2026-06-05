@@ -99,12 +99,16 @@ class Coordinator:
 
     def complete(self, game_id: str, worker_id: str, success: bool,
                  move_count: int = 0, duration_s: float = 0,
-                 store_path: str = "") -> dict:
+                 store_path: str = "", perf: dict = None) -> dict:
         """报告任务完成。"""
         with self._lock:
             self._assigned.pop(game_id, None)
-            # 记录到 worker_done 以便 _known_done() 识别
-            self._worker_done.setdefault(worker_id, set()).add(game_id)
+            # 记录到 worker_done — 只在成功时标记完成，失败的可重新分配
+            if success:
+                self._worker_done.setdefault(worker_id, set()).add(game_id)
+            # 更新性能统计
+            if perf and worker_id in self._workers:
+                self._workers[worker_id]["perf"] = perf
         log.info(f"complete {game_id} worker={worker_id} "
                  f"{'ok' if success else 'fail'} "
                  f"moves={move_count} t={duration_s:.1f}s")
@@ -121,9 +125,11 @@ class Coordinator:
                 "done": completed_total,
                 "assigned": len(self._assigned),
                 "remaining": max(0, len(self._all_games) - completed_total - len(self._assigned)),
-                "workers": {wid: {"store": w.get("store_dir", ""),
-                                   "last_seen_s": round(time.time() - w.get("last_seen", 0), 1)}
-                            for wid, w in self._workers.items()},
+                "workers": {wid: {
+                    "store": w.get("store_dir", ""),
+                    "last_seen_s": round(time.time() - w.get("last_seen", 0), 1),
+                    "perf": w.get("perf", {}),
+                } for wid, w in self._workers.items()},
             }
 
     def _cleanup_stale(self, timeout: float = 120):
@@ -164,6 +170,7 @@ class Coordinator:
                         data.get("move_count", 0),
                         data.get("duration_s", 0),
                         data.get("store_path", ""),
+                        data.get("perf"),
                     )
                     self._respond(200, result)
                 else:
