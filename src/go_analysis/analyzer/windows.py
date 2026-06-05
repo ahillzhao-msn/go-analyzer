@@ -49,9 +49,11 @@ class WindowsAnalyzer(BaseAnalyzer):
             cmd = [self.katago_path, "analysis", "-model", self.model_path]
             if self.config_path:
                 cmd += ["-config", self.config_path]
+            CREATE_NO_WINDOW = 0x08000000
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                creationflags=CREATE_NO_WINDOW,
             )
         except Exception:
             return AnalysisResult(success=False, duration_s=time.time() - t0)
