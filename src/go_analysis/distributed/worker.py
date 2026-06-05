@@ -1,10 +1,11 @@
-"""Worker — 完全自持的本地分析工人。
+"""Worker — 完全自持的本地分析工人 (v0.4.0)。
 
 架构哲学:
   - Worker 不依赖任何外部服务 (coordinator 可选)
   - 仅监控本地 SGF 缓存, 自动分析未处理的棋谱
   - 分析结果保存到本地 store
   - 暴露 HTTP 状态接口供 coordinator 轮询
+  - 日志: 文件 + 控制台, --log-dir, --log-level
 
 Coordinator 集成:
   - 通过 --coordinator-url 注册状态端点 (POST /register-worker-status)
@@ -15,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -289,6 +291,36 @@ class Worker:
             server.shutdown()
 
 
+def setup_logging(log_dir: str = "", level: str = "INFO",
+                   name: str = "worker"):
+    """配置 worker 日志: 文件 + 控制台。"""
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logger = logging.getLogger(name)
+
+    # 控制台 handler (避免重复添加)
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+               for h in logger.handlers):
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] worker: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        logger.addHandler(console)
+
+    # 文件 handler
+    if log_dir:
+        log_path = Path(log_dir)
+        log_path.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_path / "worker.log", encoding="utf-8")
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s",
+        ))
+        fh.setLevel(log_level)
+        logger.addHandler(fh)
+
+    logger.setLevel(log_level)
+
+
 def main():
     """命令行入口: python -m go_analysis.distributed.worker"""
     parser = argparse.ArgumentParser(description="Go Analyzer Worker (self-sufficient)")
@@ -306,7 +338,13 @@ def main():
                         help="Coordinator 地址 (如 http://192.168.9.32:18081), 可选")
     parser.add_argument("--serve-only", action="store_true",
                         help="仅启动状态服务, 不执行分析")
+    parser.add_argument("--log-dir", default="",
+                        help="日志目录 (默认空=仅控制台)")
+    parser.add_argument("--log-level", default="INFO",
+                        help="日志级别 (DEBUG/INFO/WARNING/ERROR)")
     args = parser.parse_args()
+
+    setup_logging(args.log_dir, args.log_level)
 
     try:
         default_wid = os.uname().nodename
