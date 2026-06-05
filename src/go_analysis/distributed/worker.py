@@ -48,6 +48,7 @@ class Worker:
         self.sync_port = sync_port
         self.coordinator_url = coordinator_url
         self._perf = self._fresh_perf()
+        self._skipped: set[str] = set()  # 已跳过的棋谱 (少于 min_moves)
         self._stop = False
 
     def _fresh_perf(self) -> dict:
@@ -150,7 +151,7 @@ class Worker:
             done = set(store.list())
             game_paths = {}
             for gid, path_str, _ in source._scan():
-                if gid not in done:
+                if gid not in done and gid not in self._skipped:
                     game_paths[gid] = Path(path_str)
 
             if not game_paths:
@@ -168,7 +169,8 @@ class Worker:
                 done = self._perf["games_analyzed"]
                 log.info(f"✓ [{done}] {game_id}: {moves}m {dt:.1f}s {vps} vps")
             elif result["status"] == "skip":
-                log.info(f"  {game_id}: skip ({result.get('reason', '')})")
+                self._skipped.add(game_id)
+                log.info(f"  [{len(self._skipped)}] {game_id}: skip ({result.get('reason', '')})")
             else:
                 log.warning(f"✗ {game_id}: {result.get('error', 'unknown')}")
 
