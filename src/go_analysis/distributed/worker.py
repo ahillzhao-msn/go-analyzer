@@ -208,7 +208,8 @@ class Worker:
                 self._skipped.add(game_id)
                 log.info(f"  [{len(self._skipped)}] {game_id}: skip ({result.get('reason', '')})")
             else:
-                log.warning(f"✗ {game_id}: {result.get('error', 'unknown')}")
+                self._skipped.add(game_id)
+                log.warning(f"✗ [{len(self._skipped)}] {game_id}: {result.get('error', 'unknown')}")
 
         log.info("Worker stopped")
 
