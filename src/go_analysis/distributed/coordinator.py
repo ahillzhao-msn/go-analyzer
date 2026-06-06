@@ -33,6 +33,7 @@ log = logging.getLogger("coordinator")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
     worker_id TEXT PRIMARY KEY,
+    mode TEXT DEFAULT 'unknown',
     status_url TEXT,
     store_dir TEXT DEFAULT '',
     last_seen REAL DEFAULT 0,
@@ -119,6 +120,11 @@ class Coordinator:
     def _init_db(self):
         conn = sqlite3.connect(str(self._db_path))
         conn.executescript(SCHEMA)
+        # 迁移: 添加 mode 列 (如果不存在)
+        try:
+            conn.execute("ALTER TABLE workers ADD COLUMN mode TEXT DEFAULT 'unknown'")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         conn.commit()
         conn.close()
         log.info(f"Coordinator DB: {self._db_path}")
@@ -127,11 +133,12 @@ class Coordinator:
         conn = sqlite3.connect(str(self._db_path))
         conn.execute("""
             INSERT OR REPLACE INTO workers
-            (worker_id, status_url, store_dir, last_seen, status,
+            (worker_id, mode, status_url, store_dir, last_seen, status,
              games_in_store, perf, local_store, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             wid,
+            info.get("mode", "unknown"),
             info.get("status_url", ""),
             info.get("store_dir", info.get("local_store", "")),
             info.get("last_seen", time.time()),
@@ -154,7 +161,7 @@ class Coordinator:
         conn = sqlite3.connect(str(self._db_path))
         rows = conn.execute("SELECT * FROM workers").fetchall()
         conn.close()
-        cols = ["worker_id", "status_url", "store_dir", "last_seen", "status",
+        cols = ["worker_id", "mode", "status_url", "store_dir", "last_seen", "status",
                 "games_in_store", "perf", "local_store", "source"]
         for row in rows:
             info = dict(zip(cols, row))
@@ -223,13 +230,14 @@ class Coordinator:
         return done
 
     # ── Worker 注册 ────────────────────────────────────
-
     def register_worker_status(self, worker_id: str, status_url: str,
-                               store_dir: str = "") -> dict:
+                               store_dir: str = "", mode: str = "unknown") -> dict:
+        """注册 worker 的状态端点。coordinator 定期轮询此 URL。"""
         with self._lock:
             info = {
                 "status_url": status_url,
                 "store_dir": store_dir or "",
+                "mode": mode,
                 "last_seen": time.time(),
                 "status": "registered",
                 "perf": {},
@@ -433,6 +441,7 @@ class Coordinator:
                 "remaining": max(0, len(self._all_games) - completed_total),
                 "progress_pct": round(completed_total / max(len(self._all_games), 1) * 100, 1),
                 "workers": {wid: {
+                    "mode": w.get("mode", "unknown"),
                     "status": w.get("status", "unknown"),
                     "status_url": w.get("status_url", ""),
                     "store": w.get("store_dir", w.get("local_store", "")),
@@ -465,6 +474,7 @@ class Coordinator:
                         data.get("worker_id", ""),
                         data.get("status_url", ""),
                         data.get("store_dir", ""),
+                        data.get("mode", "unknown"),
                     )
                     self._respond(200, result)
                 elif path == "/unregister-worker":
@@ -595,11 +605,13 @@ def _render_dashboard(stats: dict) -> str:
         total_dur = p.get("total_duration_s", 0)
         last10 = p.get("last_10", [])
         last_game = last10[-1].get("game_id", "")[:32] if last10 else "—"
-        last_moves = last10[-1].get("moves", 0) if last10 else 0
-        last_vps = last10[-1].get("vps", 0) if last10 else 0
         last_seen = info.get("last_seen_s", 999)
         status = info.get("status", "unknown")
+        mode = info.get("mode", "?")
         src = info.get("source", "?")
+
+        # 模式图标
+        mode_icon = {"linux": "🐧", "windows": "🪟", "wsl_over_windows": "🔄"}.get(mode, "❓")
 
         if status == "running":
             icon, s_color = "●", "#4ade80"
@@ -623,6 +635,7 @@ def _render_dashboard(stats: dict) -> str:
         worker_rows += f"""
         <tr>
             <td style="padding:6px 8px;color:{s_color}">{icon} {html.escape(wid)}{src_tag}</td>
+            <td style="padding:6px 8px;font-size:11px;text-align:center" title="{mode}">{mode_icon}</td>
             <td style="padding:6px 8px;color:{s_color};font-size:12px">{status[:15]}</td>
             <td style="padding:6px 8px;font-weight:bold">{store_npz}</td>
             <td style="padding:6px 8px">{games}</td>
@@ -685,8 +698,7 @@ code {{ background: #0f172a; padding: 1px 5px; border-radius: 3px; font-size: 11
 
 <h2>📊 Worker 详情</h2>
 <div class="card" style="overflow-x:auto">
-<table>
-<tr><th>Worker</th><th>状态</th><th>NPZ</th><th>分析局数</th><th>总手数</th><th>VPS</th><th>预估</th><th>心跳</th><th>最后棋局</th></tr>
+<table>\n<tr><th>Worker</th><th>模式</th><th>状态</th><th>NPZ</th><th>分析局数</th><th>总手数</th><th>VPS</th><th>预估</th><th>心跳</th><th>最后棋局</th></tr>
 {worker_rows}
 </table>
 </div>

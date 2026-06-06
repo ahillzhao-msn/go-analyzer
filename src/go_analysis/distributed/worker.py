@@ -62,6 +62,25 @@ class Worker:
         self._analyzer_games = 0
         self._analyzer_start = 0.0
 
+        # 自动检测工作模式
+        self._mode = self._detect_mode()
+
+    @staticmethod
+    def _detect_mode() -> str:
+        """自动检测 worker 运行模式: linux / windows / wsl_over_windows"""
+        import sys as _sys
+        if _sys.platform == "win32":
+            return "windows"
+        # WSL or native Linux: check by peeking at /proc/version
+        try:
+            with open("/proc/version") as _f:
+                _ver = _f.read().lower()
+            if "microsoft" in _ver or "wsl" in _ver:
+                return "wsl_over_windows"  # WSL → Windows Katago .exe 桥接
+        except Exception:
+            pass
+        return "linux"
+
     def _create_analyzer(self):
         """创建或重建 KataGo analyzer。"""
         from ..analyzer import create_analyzer
@@ -228,6 +247,7 @@ class Worker:
             wid = os.environ.get("COMPUTERNAME", "unknown")
         return {
             "worker_id": wid,
+            "mode": self._mode,
             "status": "running" if not self._stop else "stopped",
             "local_store": str(self.store_dir),
             "local_sgfs": str(self.sgf_dir),
@@ -247,6 +267,7 @@ class Worker:
             status_url = f"http://{self._get_host_ip()}:{self.sync_port}"
             data = json.dumps({
                 "worker_id": wid,
+                "mode": self._mode,
                 "status_url": status_url,
                 "store_dir": str(self.store_dir),
             }).encode()
