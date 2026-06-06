@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
 REM start_coordinator.bat — 启动 Coordinator (后台 pythonw)
-REM v0.4.0
+REM v0.4.1
 REM 用法: 双击运行, 或从命令行 start /B start_coordinator.bat
 REM ============================================================
 cd /d "%~dp0"
