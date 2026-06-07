@@ -14,7 +14,7 @@ from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
-from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features
+from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features, moves_to_katago_format
 
 
 class SshRemoteAnalyzer(BaseAnalyzer):
@@ -55,7 +55,7 @@ class SshRemoteAnalyzer(BaseAnalyzer):
         n = len(moves)
         queries = [
             json.dumps({
-                "id": f"g_{i}", "moves": moves[:i],
+                "id": f"g_{i}", "moves": moves_to_katago_format(moves[:i]),
                 "maxVisits": self.visits,
                 "rules": "chinese", "komi": 7.5,
                 "boardXSize": 19, "boardYSize": 19,
@@ -130,7 +130,7 @@ class HttpRemoteAnalyzer(BaseAnalyzer):
 
         # 构建查询
         queries = [
-            {"id": f"g_{i}", "moves": moves[:i],
+            {"id": f"g_{i}", "moves": moves_to_katago_format(moves[:i]),
              "maxVisits": self.visits,
              "rules": "chinese", "komi": 7.5,
              "boardXSize": 19, "boardYSize": 19,
