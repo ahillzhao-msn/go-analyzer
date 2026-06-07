@@ -176,6 +176,18 @@ class WindowsProcess(KataGoProcess):
 
 # ── 工厂 ────────────────────────────────────────────
 
+def _readline_with_timeout(proc: KataGoProcess, deadline: float) -> Optional[str]:
+    """从 KataGo 进程读一行，带超时。
+
+    委托给 KataGoProcess.readline()，但处理常见异常。
+    超时返回 None，EOF 返回 ''，数据返回行内容。
+    """
+    try:
+        return proc.readline(deadline)
+    except Exception:
+        return None
+
+
 def create_process() -> KataGoProcess:
     """根据当前平台创建合适的 KataGo 进程。"""
     if sys.platform == "win32":

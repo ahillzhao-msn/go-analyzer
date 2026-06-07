@@ -1,27 +1,30 @@
 """go_analysis.analyzer — KataGo 抽象适配器
 
-核心设计:
-  - BaseAnalyzer 抽象基类定义接口契约（analyze/shutdown/tune/benchmark）
-  - KataGoAnalyzer (core.py) 平台无关的核心实现
-    - 批量查询构建、超时读取、特征提取
-    - 进程生命周期管理（复用/重启）
-  - KataGoProcess (process.py) 平台具体的进程启动器
-    - DirectProcess   — Linux/macOS 原生
-    - WindowsProcess  — Windows CREATE_NO_WINDOW
-  - WindowsAnalyzer / LocalAnalyzer 是薄封装（仅选默认 Process）
-  - tune()/benchmark() 是手动 API（首次部署后显式调用）
+架构:
+  BaseAnalyzer                     — 平台无关的抽象接口（analyze/shutdown/tune/benchmark）
+  ├── WindowsAnalyzer (windows.py) — Windows / WSL→Windows 桥接
+  ├── LocalAnalyzer   (local.py)   — Linux 原生
+  └── RemoteAnalyzer  (remote.py)  — SSH/HTTP 远程
+
+  平台相关的进程管理在 process.py（Bridge 模式）：
+    KataGoProcess (abstract) → DirectProcess / WindowsProcess
+
+  调优工具在 tuning.py：
+    tune_config()   — GPU 参数自动搜索
+    benchmark()     — visits 基准测试
+    guess_vram_mb() — GPU 显存检测
 
 经验总结:
-  - KataGo Analysis Engine docs 明确 moves 格式为 [[player, gtp], ...]
-  - 内部统一用 [{x, y}, ...] 格式，moves_to_katago_format() 转换
-  - readline 超时：Linux 用 select，Windows 用线程池
+  - moves 格式：内部 [{x, y}] → KataGo API [[player, gtp]]
+  - readline 超时：Linux select / Windows 线程池
+  - tune()/benchmark() 是手动 API（首次部署后显式调用）
   - nnMaxBatchSize 是 v1.16.5 强制参数（缺失即崩溃）
 """
 from .base import BaseAnalyzer, AnalysisResult, create_analyzer, extract_12dim_features, moves_to_katago_format
-from .core import KataGoAnalyzer
 from .local import LocalAnalyzer
 from .windows import WindowsAnalyzer
-from .process import KataGoProcess, DirectProcess, WindowsProcess, create_process
+from .remote import SshRemoteAnalyzer, HttpRemoteAnalyzer
+from .process import KataGoProcess, DirectProcess, WindowsProcess, create_process, _readline_with_timeout
 from .tuning import (
     tune_config, benchmark as tune_benchmark,
     ConfigCandidate, TuneResult, guess_vram_mb, generate_candidates,
@@ -30,7 +33,7 @@ from .discovery import discover_katago, register_discovered_hosts
 
 __all__ = [
     "BaseAnalyzer", "AnalysisResult", "create_analyzer",
-    "KataGoAnalyzer", "LocalAnalyzer", "WindowsAnalyzer",
+    "LocalAnalyzer", "WindowsAnalyzer", "SshRemoteAnalyzer", "HttpRemoteAnalyzer",
     "KataGoProcess", "DirectProcess", "WindowsProcess", "create_process",
     "tune_config", "TuneResult", "ConfigCandidate",
     "guess_vram_mb", "generate_candidates",
