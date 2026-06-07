@@ -254,8 +254,12 @@ class Coordinator:
     # ── Worker 注册 ────────────────────────────────────
     def register_worker_status(self, worker_id: str, status_url: str,
                                store_dir: str = "", mode: str = "unknown") -> dict:
-        """注册 worker 的状态端点。coordinator 定期轮询此 URL。"""
+        """注册 worker 的状态端点。心跳静默，首注和变动才记日志。"""
         with self._lock:
+            existing = self._workers.get(worker_id)
+            is_new = existing is None
+            url_changed = not is_new and existing.get("status_url") != status_url
+
             info = {
                 "status_url": status_url,
                 "store_dir": store_dir or "",
@@ -269,7 +273,11 @@ class Coordinator:
             }
             self._workers[worker_id] = info
             self._save_worker(worker_id, info)
-            log.info(f"Registered worker: {worker_id} @ {status_url}")
+
+            if is_new:
+                log.info(f"Worker registered: {worker_id} @ {status_url}")
+            elif url_changed:
+                log.info(f"Worker URL changed: {worker_id} {existing.get('status_url','?')} -> {status_url}")
             return {
                 "status": "ok", "worker_id": worker_id,
                 "total": len(self._all_games),
@@ -295,21 +303,26 @@ class Coordinator:
             with urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
             with self._lock:
-                if wid in self._workers:
-                    self._workers[wid].update({
-                        "last_seen": time.time(),
-                        "status": data.get("status", data.get("state", "running")),
-                        "perf": data.get("perf", {}),
-                        "games_in_store": data.get("games_in_store", 0),
-                        "local_store": data.get("local_store", ""),
-                    })
-                    self._save_worker(wid, self._workers[wid])
+                old_status = self._workers.get(wid, {}).get("status", "")
+                self._workers[wid].update({
+                    "last_seen": time.time(),
+                    "status": data.get("status", data.get("state", "running")),
+                    "perf": data.get("perf", {}),
+                    "games_in_store": data.get("games_in_store", 0),
+                    "local_store": data.get("local_store", ""),
+                })
+                self._save_worker(wid, self._workers[wid])
+                new_status = self._workers[wid]["status"]
+                if old_status != new_status:
+                    log.info(f"Worker {wid} status: {old_status} -> {new_status}")
         except (URLError, json.JSONDecodeError, OSError) as e:
             with self._lock:
-                if wid in self._workers:
-                    self._workers[wid]["status"] = f"unreachable ({e})"
-                    self._workers[wid]["last_seen"] = time.time()
-                    self._save_worker(wid, self._workers[wid])
+                old_status = self._workers.get(wid, {}).get("status", "")
+                self._workers[wid]["status"] = f"unreachable ({e})"
+                self._workers[wid]["last_seen"] = time.time()
+                self._save_worker(wid, self._workers[wid])
+                if old_status != self._workers[wid]["status"]:
+                    log.warning(f"Worker {wid} unreachable: {e}")
 
     def _poll_loop(self):
         """后台轮询所有 Worker 的状态。"""
