@@ -284,18 +284,8 @@ class Worker:
             return None
 
     def _get_host_ip(self) -> str:
-        """获取本机 IP (用于注册状态 URL)。"""
-        import socket
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(1)
-            # 连接一个公网地址但不发数据, 仅用于获取本机 IP
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "127.0.0.1"
+        """获取本机 IP (用于注册状态 URL)。始终返回 127.0.0.1 避免防火墙问题。"""
+        return "127.0.0.1"
 
     def serve_status(self):
         """启动 HTTP 状态服务 (供 coordinator 轮询)。"""

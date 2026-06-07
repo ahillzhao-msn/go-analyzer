@@ -103,7 +103,10 @@ class Coordinator:
         self._perf_history: list[dict] = []
         self._load_perf_history()
 
-        self._scan_all()
+        # 后台扫描 SGF（避免阻塞 HTTP 服务器启动）
+        self._scan_done = False
+        self._scan_thread = threading.Thread(target=self._scan_all_bg, daemon=True)
+        self._scan_thread.start()
 
         # 后台线程
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
@@ -159,12 +162,22 @@ class Coordinator:
 
     def _load_workers_from_db(self):
         conn = sqlite3.connect(str(self._db_path))
+        conn.row_factory = sqlite3.Row  # 按名访问列，无视物理顺序
         rows = conn.execute("SELECT * FROM workers").fetchall()
         conn.close()
-        cols = ["worker_id", "mode", "status_url", "store_dir", "last_seen", "status",
-                "games_in_store", "perf", "local_store", "source"]
         for row in rows:
-            info = dict(zip(cols, row))
+            info = {
+                "worker_id": row["worker_id"],
+                "mode": row["mode"],
+                "status_url": row["status_url"],
+                "store_dir": row["store_dir"],
+                "last_seen": row["last_seen"],
+                "status": row["status"],
+                "games_in_store": row["games_in_store"],
+                "perf": row["perf"],
+                "local_store": row["local_store"],
+                "source": row["source"],
+            }
             wid = info.pop("worker_id")
             try:
                 info["perf"] = json.loads(info.get("perf", "{}"))
@@ -211,7 +224,16 @@ class Coordinator:
         conn.commit()
         conn.close()
 
-    # ── 扫描 ───────────────────────────────────────────
+    # ── SGF 扫描（后台） ──────────────────────────────
+
+    def _scan_all_bg(self):
+        """后台扫描所有 SGF 文件。"""
+        try:
+            self._scan_all()
+        except Exception as e:
+            log.warning(f"SGF scan failed: {e}")
+        finally:
+            self._scan_done = True
 
     def _scan_all(self):
         self._all_games = []
@@ -290,12 +312,26 @@ class Coordinator:
                     self._save_worker(wid, self._workers[wid])
 
     def _poll_loop(self):
+        """后台轮询所有 Worker 的状态。"""
         while True:
-            time.sleep(self._poll_interval)
-            with self._lock:
-                snapshot = dict(self._workers)
-            for wid, info in snapshot.items():
-                self._poll_worker(wid, info)
+            try:
+                time.sleep(self._poll_interval)
+                with self._lock:
+                    snapshot = dict(self._workers)
+                log.debug(f"Poll cycle: {len(snapshot)} workers to poll")
+                for wid, info in snapshot.items():
+                    try:
+                        before = info.get("status", "unknown")
+                        self._poll_worker(wid, info)
+                        with self._lock:
+                            after = self._workers.get(wid, {}).get("status", "unknown")
+                        if before != after:
+                            log.info(f"Poll worker {wid}: {before} -> {after}")
+                    except Exception as e:
+                        log.warning(f"Poll worker {wid} failed: {e}")
+            except Exception as e:
+                log.error(f"Poll loop crashed: {e}")
+                time.sleep(10)  # 短暂等待后重启
 
     # ── Peer 同步 ──────────────────────────────────────
 
@@ -414,18 +450,18 @@ class Coordinator:
 
     def stats(self) -> dict:
         with self._lock:
-            done = self._known_done()
-            completed_total = len(done)
             now = time.time()
+            total_games = len(self._all_games) if self._scan_done else 0
+            store_count = self.store_obj.count()
 
-            if now - self._last_sample_time > 60:
+            if now - self._last_sample_time > 60 and self._scan_done:
                 total_vps = sum(
                     w.get("perf", {}).get("vps_moving_avg", 0)
                     for w in self._workers.values()
                 )
                 sample = {
-                    "time": now, "done": completed_total,
-                    "remaining": max(0, len(self._all_games) - completed_total),
+                    "time": now, "done": store_count,
+                    "remaining": max(0, total_games - store_count),
                     "total_vps": round(total_vps, 1),
                     "workers": len(self._workers),
                 }
@@ -436,16 +472,17 @@ class Coordinator:
                 self._last_sample_time = now
 
             return {
-                "total": len(self._all_games),
-                "done": completed_total,
-                "remaining": max(0, len(self._all_games) - completed_total),
-                "progress_pct": round(completed_total / max(len(self._all_games), 1) * 100, 1),
+                "scan_done": self._scan_done,
+                "total": total_games,
+                "done": store_count,
+                "remaining": max(0, total_games - store_count),
+                "progress_pct": round(store_count / max(total_games, 1) * 100, 1) if total_games else 0,
                 "workers": {wid: {
                     "mode": w.get("mode", "unknown"),
                     "status": w.get("status", "unknown"),
                     "status_url": w.get("status_url", ""),
                     "store": w.get("store_dir", w.get("local_store", "")),
-                    "games_in_store": w.get("games_in_store", 0),
+                    "games_in_store": w.get("games_in_store", store_count),
                     "last_seen_s": round(now - w.get("last_seen", 0), 1),
                     "perf": w.get("perf", {}),
                 } for wid, w in self._workers.items()},

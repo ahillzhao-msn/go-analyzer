@@ -1,37 +1,12 @@
 @echo off
-REM ============================================================
-REM start_worker.bat — 启动 Worker (后台 pythonw, KataGo 常驻)
-REM v0.4.1
-REM KataGo 每 50 局或 30 分钟重启一次（兼顾效率与防死锁）
-REM ============================================================
+REM Start Worker — Go Analyzer v0.4.4
+REM Path-independent: uses %~dp0 for current directory.
 cd /d "%~dp0"
-
-set SGF_DIR=training
-set STORE_DIR=analysis_store
-set KATAGO=katago\katago.exe
-set MODEL=models\kata1-b18c384nbt-s6582191360-d3422816034.bin.gz
-set CONFIG=analysis_config.cfg
-set VISITS=25
-set SYNC_PORT=18083
-set LOG_DIR=logs
-set COORD_URL=http://127.0.0.1:18081
-
-start "" /B pythonw -m go_analysis.distributed.worker ^
-    --sgf-dir %SGF_DIR% ^
-    --store-dir %STORE_DIR% ^
-    --katago %KATAGO% ^
-    --model %MODEL% ^
-    --config %CONFIG% ^
-    --visits %VISITS% ^
-    --sync-port %SYNC_PORT% ^
-    --coordinator-url %COORD_URL% ^
-    --log-dir %LOG_DIR% ^
-    --log-level INFO ^
-    --katago-max-games 50 ^
-    --katago-max-age 1800
-
-echo Worker started (KataGo persistent, restarts every 50 games)
-echo SGF: %SGF_DIR%
-echo Store: %STORE_DIR%
-echo Log: %LOG_DIR%\worker.log
-echo Status: http://localhost:%SYNC_PORT%/status
+start "" "%~dp0venv\Scripts\pythonw.exe" -m go_analysis.distributed.worker ^
+    --sgf-dir training --store-dir analysis_store ^
+    --katago "%~dp0katago\katago.exe" ^
+    --model "%~dp0models\kata1-b18c384nbt-s6582191360-d3422816034.bin.gz" ^
+    --config "%~dp0analysis_config.cfg" ^
+    --visits 25 --sync-port 18083 --coordinator-url http://127.0.0.1:18081 ^
+    --log-dir logs --log-level INFO --katago-max-games 50 --katago-max-age 1800
+echo Worker starting on :18083
