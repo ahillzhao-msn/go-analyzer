@@ -1,10 +1,10 @@
 """WindowsAnalyzer — WSL → Windows KataGo .exe 桥接适配器。
 
-v0.5.0: 流式常驻 KataGo 进程。
-  - 单个进程跨多棋谱复用（零启动开销）
-  - 逐手查询，每手超时（默认 30s）
-  - 超时/死锁时杀进程重启，从该手重试
-  - 每 N 局或 T 秒刷新进程（防泄漏）
+v0.5.1: 常驻进程 + 批量查询。
+  - 进程跨多棋谱复用（零启动开销）
+  - 每局一次性发送全部查询（批处理速度）
+  - 超时后杀进程重启（防死锁）
+  - 每 N 局或 T 秒刷新进程
 """
 import json
 import subprocess
@@ -15,23 +15,20 @@ from typing import Optional
 from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features
 
 
-HEARTBEAT = [["B", "pd"]]
-
-
 class WindowsAnalyzer(BaseAnalyzer):
-    """WSL → Windows KataGo 桥接适配器（流式常驻进程）。"""
+    """WSL → Windows KataGo 桥接适配器（常驻进程 + 批量查询）。"""
 
     def __init__(self, katago_path: str, model_path: str,
                  config_path: Optional[str] = None,
                  visits: int = 25,
-                 per_move_timeout: float = 30.0,
+                 batch_timeout: float = 180.0,
                  max_games: int = 50,
                  max_age: float = 1800.0):
         self.katago_path = katago_path
         self.model_path = model_path
         self.config_path = config_path
         self.visits = visits
-        self.per_move_timeout = per_move_timeout
+        self.batch_timeout = batch_timeout
         self.max_games = max_games
         self.max_age = max_age
 
@@ -68,7 +65,6 @@ class WindowsAnalyzer(BaseAnalyzer):
                 pass
 
     def _ensure(self) -> bool:
-        """确保进程存活、健康、未超龄。"""
         now = time.time()
         restart = False
         if self._proc is None:
@@ -90,85 +86,74 @@ class WindowsAnalyzer(BaseAnalyzer):
                 return False
         return True
 
-    # ── 单次查询（带超时） ──────────────────────────────
+    # ── 批量分析 ────────────────────────────────────────
 
-    def _query(self, moves: list, timeout: float) -> Optional[dict]:
-        """发一条查询，读一条响应。超时返回 None。"""
-        proc = self._proc
-        if proc is None:
-            return None
-        q = json.dumps({
-            "id": "q", "moves": moves,
-            "maxVisits": self.visits,
-            "rules": "chinese", "komi": 7.5,
-            "boardXSize": 19, "boardYSize": 19,
-            "includePolicy": True,
-        })
+    def analyze(self, moves: list) -> AnalysisResult:
+        """批量分析一局棋谱。常驻进程复用。超时自动重启。"""
+        if not moves:
+            return AnalysisResult(success=True, features=[])
+
+        n, t0 = len(moves), time.time()
+
+        with self._lock:
+            if not self._ensure():
+                return AnalysisResult(success=False, duration_s=time.time() - t0)
+            proc = self._proc
+
+        # 构建全部查询
+        queries = [
+            json.dumps({
+                "id": f"g_{i}", "moves": moves[:i],
+                "maxVisits": self.visits,
+                "rules": "chinese", "komi": 7.5,
+                "boardXSize": 19, "boardYSize": 19,
+                "includePolicy": True,
+            })
+            for i in range(n)
+        ]
+
+        # 发送
         try:
-            proc.stdin.write(q + "\n")
+            proc.stdin.write("\n".join(queries) + "\n")
             proc.stdin.flush()
         except Exception:
-            return None
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+            self._kill()
+            return AnalysisResult(success=False, duration_s=time.time() - t0)
+
+        # 读取响应（带超时）
+        responses = {}
+        deadline = time.time() + self.batch_timeout
+        while len(responses) < n and time.time() < deadline:
             try:
                 line = proc.stdout.readline()
                 if not line:
-                    return None
+                    break
                 r = json.loads(line.strip())
-                if r.get("id") == "q":
-                    return r
+                parts = r.get("id", "").split("_")
+                if parts and parts[-1].isdigit():
+                    responses[int(parts[-1])] = r
             except Exception:
                 continue
-        return None
 
-    # ── 公开接口 ────────────────────────────────────────
+        dt = time.time() - t0
 
-    def analyze(self, moves: list) -> AnalysisResult:
-        """流式分析一局棋谱。逐手查询，超时自动重启。"""
-        if not moves:
-            return AnalysisResult(success=True, features=[])
-        n, t0 = len(moves), time.time()
-        raw: dict[int, dict] = {}
-        i = 0
-        ok = True
+        # 如果超时或读不到数据，杀进程重启
+        if not responses:
+            self._kill()
+            return AnalysisResult(success=False, duration_s=dt)
 
-        while i < n:
-            with self._lock:
-                if not self._ensure():
-                    ok = False
-                    break
-                resp = self._query(moves[:i + 1], self.per_move_timeout)
-            if resp is None:
-                with self._lock:
-                    self._kill()
-                continue  # 重试同手
-            mi = resp.get("moveInfos", [])
-            ri = resp.get("rootInfo", {})
-            raw[i] = {"id": f"g_{i}", "moveInfos": mi, "rootInfo": ri}
-            i += 1
+        # 提取特征
+        success = len(responses) >= n
+        feats = extract_12dim_features(responses, moves[:len(responses)])
 
         with self._lock:
             self._games += 1
 
-        dt = time.time() - t0
-        if not raw:
-            return AnalysisResult(success=False, duration_s=dt)
-        feats = extract_12dim_features(raw, moves[:len(raw)])
-        return AnalysisResult(features=feats, duration_s=dt, success=ok,
+        return AnalysisResult(features=feats, duration_s=dt, success=success,
                               visits_used=self.visits)
 
-    def health_check(self) -> bool:
-        """健康探针。"""
-        with self._lock:
-            if not self._ensure():
-                return False
-            return self._query(HEARTBEAT, 10.0) is not None
-
     def shutdown(self):
-        """释放 KataGo 进程。"""
-        with self._lock:
-            self._kill()
+        self._kill()
 
     def __del__(self):
         self.shutdown()
