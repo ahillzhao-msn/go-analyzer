@@ -77,13 +77,17 @@ set RETRY=0
 :KILL_LOOP
 set /a RETRY+=1
 if %RETRY% gtr 10 (
-    echo   Port %PORT% still occupied after %RETRY% attempts, continuing anyway...
+    echo   Port %PORT% still occupied, continuing anyway...
     exit /b 0
 )
 netstat -ano | findstr ":%PORT%" >nul 2>nul
 if errorlevel 1 exit /b 0
+
+echo   Port %PORT% in use, killing...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%PORT%" ^| findstr LISTENING') do (
-    taskkill /f /pid %%p >nul 2>nul
+    taskkill /f /t /pid %%p >nul 2>nul
+    powershell -Command "Stop-Process -Id %%p -Force -ErrorAction SilentlyContinue" >nul 2>nul
+    wmic process where ProcessId=%%p delete >nul 2>nul
 )
-timeout /t 2 /nobreak >nul
+timeout /t 3 /nobreak >nul
 goto KILL_LOOP
