@@ -84,7 +84,7 @@ class Worker:
     def _create_analyzer(self):
         """创建或重建 KataGo analyzer（流式常驻进程）。"""
         from ..analyzer import create_analyzer
-        analyzer_type = "streaming" if ".exe" in self.katago_path else "local"
+        analyzer_type = "windows" if ".exe" in self.katago_path else "local"
         self._analyzer = create_analyzer(
             analyzer_type,
             katago_path=self.katago_path,
@@ -97,7 +97,7 @@ class Worker:
         )
         self._analyzer_games = 0
         self._analyzer_start = time.time()
-        log.info(f"Streaming KataGo started (type={analyzer_type})")
+        log.info(f"KataGo analyzer ready (type={analyzer_type})")
 
     def _need_restart(self) -> bool:
         """判断是否需要重启 KataGo 进程。"""

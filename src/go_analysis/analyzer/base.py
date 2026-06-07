@@ -137,6 +137,10 @@ class BaseAnalyzer(abc.ABC):
         """
         ...
 
+    def shutdown(self):
+        """释放资源（如关闭常驻进程）。子类按需重写。"""
+        pass
+
     @abc.abstractmethod
     def benchmark(self, test_moves: list, visits_range: list = None) -> dict:
         """基准测试 — 找出最优 visits 配置。
@@ -183,9 +187,6 @@ def create_analyzer(platform_type: str = "auto", **kwargs) -> BaseAnalyzer:
     if platform_type == "windows":
         from .windows import WindowsAnalyzer
         return WindowsAnalyzer(**kwargs)
-    elif platform_type == "streaming":
-        from .streaming import StreamingWindowsAnalyzer
-        return StreamingWindowsAnalyzer(**kwargs)
     elif platform_type == "local":
         from .local import LocalAnalyzer
         return LocalAnalyzer(**kwargs)

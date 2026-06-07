@@ -14,12 +14,11 @@
 from .base import BaseAnalyzer, AnalysisResult, create_analyzer, extract_12dim_features
 from .local import LocalAnalyzer
 from .windows import WindowsAnalyzer
-from .streaming import StreamingWindowsAnalyzer
 from .tuning import benchmark, tune, tune_gpu
 from .discovery import discover_katago
 
 __all__ = [
     "BaseAnalyzer", "AnalysisResult", "create_analyzer",
-    "LocalAnalyzer", "WindowsAnalyzer", "StreamingWindowsAnalyzer",
+    "LocalAnalyzer", "WindowsAnalyzer",
     "benchmark", "tune", "discover_katago",
 ]
