@@ -82,19 +82,22 @@ class Worker:
         return "linux"
 
     def _create_analyzer(self):
-        """创建或重建 KataGo analyzer。"""
+        """创建或重建 KataGo analyzer（流式常驻进程）。"""
         from ..analyzer import create_analyzer
-        analyzer_type = "windows" if ".exe" in self.katago_path else "local"
+        analyzer_type = "streaming" if ".exe" in self.katago_path else "local"
         self._analyzer = create_analyzer(
             analyzer_type,
             katago_path=self.katago_path,
             model_path=self.model_path,
             config_path=self.config_path,
             visits=self.visits,
+            per_move_timeout=30.0,
+            max_games=self._katago_max_games,
+            max_age=self._katago_max_age,
         )
         self._analyzer_games = 0
         self._analyzer_start = time.time()
-        log.info(f"KataGo process started (type={analyzer_type})")
+        log.info(f"Streaming KataGo started (type={analyzer_type})")
 
     def _need_restart(self) -> bool:
         """判断是否需要重启 KataGo 进程。"""
@@ -234,6 +237,15 @@ class Worker:
 
     def stop(self):
         self._stop = True
+
+    def shutdown(self):
+        """清理资源：关闭常驻 KataGo 进程。"""
+        self._stop = True
+        if self._analyzer is not None:
+            try:
+                self._analyzer.shutdown()
+            except Exception:
+                pass
 
     # ── 同步状态接口 (供 coordinator 轮询) ────────────
 

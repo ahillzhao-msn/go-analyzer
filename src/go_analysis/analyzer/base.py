@@ -183,6 +183,9 @@ def create_analyzer(platform_type: str = "auto", **kwargs) -> BaseAnalyzer:
     if platform_type == "windows":
         from .windows import WindowsAnalyzer
         return WindowsAnalyzer(**kwargs)
+    elif platform_type == "streaming":
+        from .streaming import StreamingWindowsAnalyzer
+        return StreamingWindowsAnalyzer(**kwargs)
     elif platform_type == "local":
         from .local import LocalAnalyzer
         return LocalAnalyzer(**kwargs)
