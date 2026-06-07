@@ -91,7 +91,7 @@ class Worker:
             model_path=self.model_path,
             config_path=self.config_path,
             visits=self.visits,
-            per_move_timeout=30.0,
+            per_move_timeout=60.0,
             max_games=self._katago_max_games,
             max_age=self._katago_max_age,
         )
