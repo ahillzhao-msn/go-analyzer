@@ -96,7 +96,7 @@ class TestWindowsAnalyzerKillSafety(unittest.TestCase):
 class TestWorkerLogging(unittest.TestCase):
     """▶ 3. worker 日志不包含 Unicode cp1252 不支持的字符"""
 
-    def test_log_messages_no_emoji(self):
+    def test_log_messages_no_unicode_cp1252(self):
         """成功/失败日志用 ASCII 标记"""
         log_msgs = [
             "OK [1] test-game: 100m 10.0s 250 vps",
@@ -180,6 +180,33 @@ class TestBaseAnalyzerInterface(unittest.TestCase):
             a = WindowsAnalyzer(katago_path="k.exe", model_path="m.bin.gz")
         self.assertEqual(called["tune"], 0)
         self.assertEqual(called["bench"], 0)
+
+
+class TestMovesToKatagoFormat(unittest.TestCase):
+    """▶ 6. moves_to_katago_format — 内部格式→KataGo API 格式"""
+
+    def test_basic_conversion(self):
+        from go_analysis.analyzer.base import moves_to_katago_format
+        moves = [{"x": 3, "y": 3}, {"x": 15, "y": 15}]
+        result = moves_to_katago_format(moves)
+        self.assertEqual(result, [["B", "D4"], ["W", "Q16"]])
+
+    def test_alternating_colors(self):
+        from go_analysis.analyzer.base import moves_to_katago_format
+        moves = [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 2, "y": 0}]
+        result = moves_to_katago_format(moves)
+        self.assertEqual(result, [["B", "A1"], ["W", "B1"], ["B", "C1"]])
+
+    def test_empty_moves(self):
+        from go_analysis.analyzer.base import moves_to_katago_format
+        self.assertEqual(moves_to_katago_format([]), [])
+
+    def test_skip_I_column(self):
+        """GTP 标准：跳过 I，所以 H=8->8, J=9->10"""
+        from go_analysis.analyzer.base import moves_to_katago_format
+        moves = [{"x": 7, "y": 7}, {"x": 8, "y": 7}, {"x": 9, "y": 7}]
+        result = moves_to_katago_format(moves)
+        self.assertEqual(result, [["B", "H8"], ["W", "J8"], ["B", "K8"]])
 
 
 if __name__ == "__main__":

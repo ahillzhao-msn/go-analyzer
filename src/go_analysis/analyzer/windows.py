@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, TextIO
 
-from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features
+from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features, moves_to_katago_format
 
 log = logging.getLogger("analyzer.windows")
 
@@ -177,7 +177,8 @@ class WindowsAnalyzer(BaseAnalyzer):
 
             queries = [
                 json.dumps({
-                    "id": f"g_{i}", "moves": moves[:i],
+                    "id": f"g_{i}",
+                    "moves": moves_to_katago_format(moves[:i]),
                     "maxVisits": self.visits,
                     "rules": "chinese", "komi": 7.5,
                     "boardXSize": 19, "boardYSize": 19,

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .base import moves_to_katago_format
+
 
 # ── 数据结构 ────────────────────────────────────────
 
@@ -222,7 +224,7 @@ def _test_candidate(
     n = _N_TEST_MOVES
     queries = [
         json.dumps({
-            "id": f"q_{i}", "moves": moves[:i],
+            "id": f"q_{i}", "moves": moves_to_katago_format(moves[:i]),
             "maxVisits": visits,
             "rules": "chinese", "komi": 7.5,
             "boardXSize": 19, "boardYSize": 19,

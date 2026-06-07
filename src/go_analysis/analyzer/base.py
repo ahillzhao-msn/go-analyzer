@@ -55,6 +55,17 @@ def _coord_to_gtp(x: int, y: int) -> str:
     return f"{_GTP_COLUMNS[x]}{y + 1}"
 
 
+def moves_to_katago_format(moves: list) -> list:
+    """内部 [{x, y}, ...] 格式 → KataGo API [[player, gtp], ...] 格式。
+
+    按奇偶推断执色（第 0 手为黑，第 1 手为白，如此类推）。
+    """
+    return [
+        ["B" if i % 2 == 0 else "W", _coord_to_gtp(m["x"], m["y"])]
+        for i, m in enumerate(moves)
+    ]
+
+
 def extract_12dim_features(responses: dict, moves: list) -> np.ndarray:
     """从 KataGo 分析响应中提取 12 维特征矩阵。
 
