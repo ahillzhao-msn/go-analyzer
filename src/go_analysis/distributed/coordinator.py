@@ -254,24 +254,42 @@ class Coordinator:
     # ── Worker 注册 ────────────────────────────────────
     def register_worker_status(self, worker_id: str, status_url: str,
                                store_dir: str = "", mode: str = "unknown") -> dict:
-        """注册 worker 的状态端点。心跳静默，首注和变动才记日志。"""
+        """注册 worker 的状态端点。心跳静默，首注和变动才记日志。
+
+        注意：这是 worker 每 60s 心跳调用的注册接口，仅传递身份信息。
+        性能数据（perf、games_in_store、running status）由 _poll_worker 拉取，
+        此处用 update() 合并而非整体替换，避免清除 poller 数据。
+        """
         with self._lock:
             existing = self._workers.get(worker_id)
             is_new = existing is None
             url_changed = not is_new and existing.get("status_url") != status_url
 
-            info = {
-                "status_url": status_url,
-                "store_dir": store_dir or "",
-                "mode": mode,
-                "last_seen": time.time(),
-                "status": "registered",
-                "perf": {},
-                "games_in_store": 0,
-                "local_store": store_dir or "",
-                "source": self.node_id,
-            }
-            self._workers[worker_id] = info
+            if is_new:
+                # 首次注册：初始化完整结构
+                info = {
+                    "status_url": status_url,
+                    "store_dir": store_dir or "",
+                    "mode": mode,
+                    "last_seen": time.time(),
+                    "status": "registered",
+                    "perf": {},
+                    "games_in_store": 0,
+                    "local_store": store_dir or "",
+                    "source": self.node_id,
+                }
+                self._workers[worker_id] = info
+            else:
+                # 心跳更新：仅覆盖注册相关字段，保留 poller 数据
+                existing.update({
+                    "status_url": status_url,
+                    "store_dir": store_dir or "",
+                    "mode": mode,
+                    "last_seen": time.time(),
+                    "source": self.node_id,
+                })
+                info = existing
+
             self._save_worker(worker_id, info)
 
             if is_new:
