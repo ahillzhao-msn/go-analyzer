@@ -1,23 +1,16 @@
 """KataGo Process — 平台无关的子进程包装器。
-
-Bridge 模式：定义一个抽象的 KataGo 进程接口，各平台提供不同实现。
 """
 import abc
-import json
 import logging
-import os
+import queue
 import select
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 log = logging.getLogger(__name__)
-
-# ── 超时 readline 的共享线程池（Windows 用） ────────
-_readline_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readline")
 
 
 class KataGoProcess(abc.ABC):
@@ -117,12 +110,28 @@ class DirectProcess(KataGoProcess):
 # ── Windows 原生实现 ────────────────────────────────
 
 class WindowsProcess(KataGoProcess):
-    """Windows 原生 subprocess（带 CREATE_NO_WINDOW）。"""
+    """Windows 原生 subprocess（带 CREATE_NO_WINDOW + 队列读取线程）。"""
 
     CREATE_NO_WINDOW = 0x08000000
 
     def __init__(self):
         self._proc: Optional[subprocess.Popen] = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._line_queue: Optional[queue.Queue] = None
+        self._reader_stop = threading.Event()
+
+    def _reader_loop(self, stream):
+        """后台线程：持续从 stdout 读行，放入队列。"""
+        try:
+            while not self._reader_stop.is_set():
+                line = stream.readline()
+                if not line:
+                    # EOF — 进程结束
+                    self._line_queue.put(("", None))
+                    return
+                self._line_queue.put(("line", line))
+        except Exception as e:
+            self._line_queue.put(("error", e))
 
     def start(self, katago_path: str, model_path: str,
               config_path: Optional[str] = None) -> None:
@@ -134,8 +143,18 @@ class WindowsProcess(KataGoProcess):
             stderr=subprocess.DEVNULL, text=True, bufsize=1,
             creationflags=self.CREATE_NO_WINDOW,
         )
+        # 启动读取队列
+        self._line_queue = queue.Queue()
+        self._reader_stop.clear()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            args=(self._proc.stdout,),
+            daemon=True,
+        )
+        self._reader_thread.start()
 
     def kill(self) -> None:
+        self._reader_stop.set()  # 通知读取线程停止
         proc = self._proc
         if proc is None:
             return
@@ -148,6 +167,11 @@ class WindowsProcess(KataGoProcess):
                 proc.kill()
             except Exception:
                 pass
+        # 等读取线程感知进程结束
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2)
+        self._reader_thread = None
+        self._line_queue = None
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -159,18 +183,22 @@ class WindowsProcess(KataGoProcess):
         self._proc.stdin.flush()
 
     def readline(self, deadline: float) -> Optional[str]:
-        """Windows：线程池 + Future timeout（select 不支持 Windows pipe）。"""
-        if self._proc is None or self._proc.stdout is None:
+        """Windows：从队列取出。超时返回 None，EOF 返回 ''。"""
+        if self._line_queue is None:
             return ''
         remaining = deadline - time.time()
         if remaining <= 0:
             return None
-        fut = _readline_pool.submit(self._proc.stdout.readline)
         try:
-            return fut.result(timeout=min(remaining, 5.0))
-        except TimeoutError:
-            return None
-        except Exception:
+            kind, data = self._line_queue.get(timeout=min(remaining, 5.0))
+            if kind == "line":
+                return data
+            elif kind == "error":
+                return ''
+            elif kind == "":
+                return ''
+            return data
+        except queue.Empty:
             return None
 
 
