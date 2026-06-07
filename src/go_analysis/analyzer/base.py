@@ -1,13 +1,21 @@
 """BaseAnalyzer — KataGo 分析器抽象基类。
 
-定义统一的接口契约:
-  - analyze(moves) → AnalysisResult
-  - benchmark() → dict
-  - tune() → dict
-  - discover() → dict
+接口契约:
+  - analyze()      分析一局棋 → AnalysisResult
+  - shutdown()     释放资源
+  - benchmark()    最优 visits 基准测试
+  - tune()         自动参数调优（线程/批次/访问数）
+  - discover()     环境自动发现
+
+tune() 是全自动入口，调用 tuning.tune_config() 做 GPU 参数搜索，
+再对最佳配置做 visits 扫描。
 """
 import abc
+import os
+import tempfile
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 import numpy as np
 
@@ -122,6 +130,25 @@ def extract_12dim_features(responses: dict, moves: list) -> np.ndarray:
     return feats
 
 
+def _default_bench_moves() -> list:
+    """50 手标准测试棋谱。"""
+    return [
+        {"x": 3, "y": 3}, {"x": 15, "y": 15}, {"x": 3, "y": 15}, {"x": 15, "y": 3},
+        {"x": 3, "y": 9}, {"x": 15, "y": 9}, {"x": 9, "y": 3}, {"x": 9, "y": 15},
+        {"x": 6, "y": 5}, {"x": 12, "y": 13}, {"x": 5, "y": 12}, {"x": 13, "y": 6},
+        {"x": 7, "y": 2}, {"x": 11, "y": 16}, {"x": 2, "y": 11}, {"x": 16, "y": 7},
+        {"x": 10, "y": 5}, {"x": 8, "y": 13}, {"x": 4, "y": 7}, {"x": 14, "y": 11},
+        {"x": 8, "y": 2}, {"x": 10, "y": 16}, {"x": 2, "y": 8}, {"x": 16, "y": 10},
+        {"x": 9, "y": 7}, {"x": 9, "y": 11}, {"x": 7, "y": 9}, {"x": 11, "y": 9},
+        {"x": 5, "y": 5}, {"x": 13, "y": 13}, {"x": 5, "y": 13}, {"x": 13, "y": 5},
+        {"x": 10, "y": 3}, {"x": 8, "y": 15}, {"x": 3, "y": 10}, {"x": 15, "y": 8},
+        {"x": 6, "y": 9}, {"x": 12, "y": 9}, {"x": 9, "y": 6}, {"x": 9, "y": 12},
+        {"x": 7, "y": 6}, {"x": 11, "y": 12}, {"x": 6, "y": 11}, {"x": 12, "y": 7},
+        {"x": 4, "y": 4}, {"x": 14, "y": 14}, {"x": 4, "y": 14}, {"x": 14, "y": 4},
+        {"x": 9, "y": 5}, {"x": 9, "y": 13},
+    ]
+
+
 class BaseAnalyzer(abc.ABC):
     """KataGo 分析器抽象基类。"""
 
@@ -141,27 +168,171 @@ class BaseAnalyzer(abc.ABC):
         """释放资源（如关闭常驻进程）。子类按需重写。"""
         pass
 
-    @abc.abstractmethod
-    def benchmark(self, test_moves: list, visits_range: list = None) -> dict:
+    # ── 核心属性（子类应设置）──
+
+    @property
+    def katago_path(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def model_path(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def config_path(self) -> Optional[str]:
+        return None
+
+    # ── 基准测试 ────────────────────────────────────
+
+    def benchmark(self, test_moves: list = None,
+                  visits_range: list = None) -> dict:
         """基准测试 — 找出最优 visits 配置。
 
-        Returns: {"best_visits": N, "vps": X, ...}
-        """
-        ...
+        在当前的 config 下测试不同 visits 值的 VPS 表现。
 
-    def tune(self, test_moves: list) -> dict:
-        """参数调优 (默认基于 benchmark 结果)。"""
-        return self.benchmark(test_moves)
+        Args:
+            test_moves: 测试棋谱位移（默认 50 手标准开局）
+            visits_range: 要测试的 visits 值列表
+
+        Returns:
+            {"best_visits": N, "best_vps": X, "results": [{visits, duration_s, vps}, ...]}
+        """
+        if test_moves is None:
+            test_moves = _default_bench_moves()
+        if visits_range is None:
+            visits_range = [25, 50, 100, 200]
+
+        original = getattr(self, "visits", 25)
+        results = []
+
+        for v in visits_range:
+            self.visits = v
+            t0 = time.time()
+            result = self.analyze(test_moves[:min(50, len(test_moves))])
+            dt = time.time() - t0
+            vps = v * result.num_moves / max(dt, 0.1) if result.success else 0
+            results.append({
+                "visits": v,
+                "duration_s": round(dt, 2),
+                "vps": round(vps, 1),
+                "moves": result.num_moves,
+                "success": result.success,
+            })
+
+        self.visits = original
+
+        best = max(results, key=lambda r: r.get("vps", 0)) if results else {}
+        return {
+            "best_visits": best.get("visits", original),
+            "best_vps": best.get("vps", 0),
+            "results": results,
+        }
+
+    # ── 自动调优（核心）──────────────────────────────
+
+    def tune(self, output_config_path: Optional[str] = None) -> dict:
+        """全自动生产环境调优。
+
+        流程:
+          1. discover() → 检测环境（GPU、CPU、OS）
+          2. tune_config() → GPU 参数搜索（线程/批次）
+          3. benchmark() → 在最佳配置下找最优 visits
+          4. 返回综合报告 + 可选写推荐 config
+
+        Returns:
+            {
+                "environment": {...},
+                "config_tune": {
+                    "best_config": {numSearchThreads, numAnalysisThreads, nnMaxBatchSize, vps},
+                    "results": [...],
+                    "diagnosis": "最佳"|"保守"|"不稳定",
+                },
+                "benchmark": {
+                    "best_visits": N,
+                    "results": [...],
+                },
+                "recommended_config_path": str or "",
+            }
+        """
+        from .tuning import tune_config as _tune_config
+
+        env = self.discover()
+
+        config_tune = _tune_config(
+            katago_path=self.katago_path,
+            model_path=self.model_path,
+            base_config_path=self.config_path,
+            output_path=output_config_path,
+        )
+
+        # 如果调优成功，更新自身配置
+        benchmark_result = {}
+        best_cfg = config_tune.get("best_config", {})
+        if best_cfg.get("vps", 0) > 0:
+            self.numSearchThreads = best_cfg.get("numSearchThreads",
+                                                  getattr(self, "numSearchThreads", 8))
+            self.numAnalysisThreads = best_cfg.get("numAnalysisThreads",
+                                                    getattr(self, "numAnalysisThreads", 4))
+            self.nnMaxBatchSize = best_cfg.get("nnMaxBatchSize",
+                                               getattr(self, "nnMaxBatchSize", 50))
+
+            # 如果 tune_config 写入了推荐配置文件，用它；否则写临时 cfg 跑 benchmark
+            rec_path = config_tune.get("recommended_config_path", "")
+            if rec_path and Path(rec_path).exists():
+                self.config_path = rec_path
+            else:
+                tmp_cfg = Path(tempfile.mktemp(suffix=".cfg"))
+                try:
+                    tmp_cfg.write_text(
+                        f"numSearchThreads = {self.numSearchThreads}\n"
+                        f"nnMaxBatchSize = {self.nnMaxBatchSize}\n"
+                        f"numAnalysisThreads = {self.numAnalysisThreads}\n"
+                    )
+                    self.config_path = str(tmp_cfg)
+                    benchmark_result = self.benchmark()
+                finally:
+                    tmp_cfg.unlink(missing_ok=True)
+
+            # 杀当前进程，下次 analyze 用新配置启动
+            self.shutdown()
+
+        return {
+            "environment": env,
+            "config_tune": config_tune,
+            "benchmark": benchmark_result,
+            "recommended_config_path": config_tune.get("recommended_config_path", ""),
+        }
+
+    # ── 环境发现 ────────────────────────────────────
 
     def discover(self) -> dict:
-        """自动发现环境信息。返回环境检测结果 dict。"""
-        import platform, sys, os, subprocess
+        """自动发现环境信息。子类可扩展。"""
+        from .tuning import guess_vram_mb
+        import platform, sys
+
         info = {
             "os": platform.system(),
             "os_release": platform.release(),
             "python": sys.version,
-            "wsl": "microsoft" in platform.uname().release.lower() if hasattr(platform, 'uname') else False,
+            "cpu_cores": os.cpu_count() or 8,
+            "vram_mb": guess_vram_mb(),
         }
+
+        # WSL 检测
+        uname = getattr(platform, 'uname', lambda: None)()
+        if uname and "microsoft" in uname.release.lower():
+            info["wsl"] = True
+            info["os"] = "WSL"
+
+        # GPU 厂商
+        try:
+            import subprocess as _sp
+            r = _sp.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                info["gpu_name"] = r.stdout.strip()
+        except Exception:
+            pass
+
         return info
 
 
@@ -176,7 +347,6 @@ def create_analyzer(platform_type: str = "auto", **kwargs) -> BaseAnalyzer:
         BaseAnalyzer 实例
     """
     if platform_type == "auto":
-        # 自动检测
         import platform as _platform
         uname = getattr(_platform, 'uname', lambda: None)()
         if uname and "microsoft" in uname.release.lower():

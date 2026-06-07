@@ -5,6 +5,7 @@ v0.5.1: 常驻进程 + 批量查询。
   - 每局一次性发送全部查询（批处理速度）
   - 超时后杀进程重启（防死锁）
   - 每 N 局或 T 秒刷新进程
+  - tune() 接口自动硬件适配（继承自 BaseAnalyzer）
 """
 import json
 import subprocess
@@ -23,26 +24,50 @@ class WindowsAnalyzer(BaseAnalyzer):
                  visits: int = 25,
                  batch_timeout: float = 180.0,
                  max_games: int = 50,
-                 max_age: float = 1800.0):
-        self.katago_path = katago_path
-        self.model_path = model_path
-        self.config_path = config_path
+                 max_age: float = 1800.0,
+                 numSearchThreads: int = 12,
+                 numAnalysisThreads: int = 5,
+                 nnMaxBatchSize: int = 100):
+        self._katago_path = katago_path
+        self._model_path = model_path
+        self._config_path = config_path
         self.visits = visits
         self.batch_timeout = batch_timeout
         self.max_games = max_games
         self.max_age = max_age
+        self.numSearchThreads = numSearchThreads
+        self.numAnalysisThreads = numAnalysisThreads
+        self.nnMaxBatchSize = nnMaxBatchSize
 
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._games = 0
         self._born = time.time()
 
-    # ── 进程生命周期 ────────────────────────────────────
+    # ── 基类需要的属性 ───────────────────────────────
+
+    @property
+    def katago_path(self) -> str:
+        return self._katago_path
+
+    @property
+    def model_path(self) -> str:
+        return self._model_path
+
+    @property
+    def config_path(self) -> Optional[str]:
+        return self._config_path
+
+    @config_path.setter
+    def config_path(self, value: Optional[str]):
+        self._config_path = value
+
+    # ── 进程生命周期 ─────────────────────────────────
 
     def _start(self):
-        cmd = [self.katago_path, "analysis", "-model", self.model_path]
-        if self.config_path:
-            cmd += ["-config", self.config_path]
+        cmd = [self._katago_path, "analysis", "-model", self._model_path]
+        if self._config_path:
+            cmd += ["-config", self._config_path]
         CREATE_NO_WINDOW = 0x08000000
         self._proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -86,7 +111,7 @@ class WindowsAnalyzer(BaseAnalyzer):
                 return False
         return True
 
-    # ── 批量分析 ────────────────────────────────────────
+    # ── 批量分析 ────────────────────────────────────
 
     def analyze(self, moves: list) -> AnalysisResult:
         """批量分析一局棋谱。常驻进程复用。超时自动重启。"""
@@ -157,19 +182,3 @@ class WindowsAnalyzer(BaseAnalyzer):
 
     def __del__(self):
         self.shutdown()
-
-    def benchmark(self, test_moves: list, visits_range: list = None) -> dict:
-        if visits_range is None:
-            visits_range = [25, 50, 100, 200]
-        original = self.visits
-        results = []
-        for v in visits_range:
-            self.visits = v
-            t0 = time.time()
-            result = self.analyze(test_moves[:min(50, len(test_moves))])
-            dt = time.time() - t0
-            vps = v * result.num_moves / max(dt, 0.1) if result.success else 0
-            results.append({"visits": v, "duration_s": round(dt, 2), "vps": round(vps, 1)})
-        self.visits = original
-        best = max(results, key=lambda r: r["vps"]) if results else {"visits": self.visits}
-        return {"best_visits": best["visits"], "results": results}
