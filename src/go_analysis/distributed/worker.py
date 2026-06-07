@@ -225,13 +225,13 @@ class Worker:
                 vps = round(moves * self.visits / dt, 1) if dt > 0 else 0
                 self._update_perf(game_id, moves, dt, vps)
                 done = self._perf["games_analyzed"]
-                log.info(f"✓ [{done}] {game_id}: {moves}m {dt:.1f}s {vps} vps")
+                log.info(f"OK [{done}] {game_id}: {moves}m {dt:.1f}s {vps} vps")
             elif result["status"] == "skip":
                 self._skipped.add(game_id)
-                log.info(f"  [{len(self._skipped)}] {game_id}: skip ({result.get('reason', '')})")
+                log.info(f"-- [{len(self._skipped)}] {game_id}: skip ({result.get('reason', '')})")
             else:
                 self._skipped.add(game_id)
-                log.warning(f"✗ [{len(self._skipped)}] {game_id}: {result.get('error', 'unknown')}")
+                log.warning(f"!! [{len(self._skipped)}] {game_id}: {result.get('error', 'unknown')}")
 
         log.info("Worker stopped")
 

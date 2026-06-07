@@ -5,15 +5,18 @@ v0.5.1: 常驻进程 + 批量查询。
   - 每局一次性发送全部查询（批处理速度）
   - 超时后杀进程重启（防死锁）
   - 每 N 局或 T 秒刷新进程
-  - tune() 接口自动硬件适配（继承自 BaseAnalyzer）
+  - tune()/benchmark() 是手动 API（首次部署后显式调用）
 """
 import json
+import logging
 import subprocess
 import threading
 import time
 from typing import Optional
 
 from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features
+
+log = logging.getLogger("analyzer.windows")
 
 
 class WindowsAnalyzer(BaseAnalyzer):
@@ -23,11 +26,15 @@ class WindowsAnalyzer(BaseAnalyzer):
                  config_path: Optional[str] = None,
                  visits: int = 25,
                  batch_timeout: float = 180.0,
+                 per_move_timeout: Optional[float] = None,
                  max_games: int = 50,
                  max_age: float = 1800.0,
                  numSearchThreads: int = 12,
                  numAnalysisThreads: int = 5,
                  nnMaxBatchSize: int = 100):
+        # per_move_timeout 是旧版参数名，映射到 batch_timeout
+        if per_move_timeout is not None:
+            batch_timeout = per_move_timeout * 3
         self._katago_path = katago_path
         self._model_path = model_path
         self._config_path = config_path
@@ -44,7 +51,7 @@ class WindowsAnalyzer(BaseAnalyzer):
         self._games = 0
         self._born = time.time()
 
-    # ── 基类需要的属性 ───────────────────────────────
+    # ── 基类属性 ────────────────────────────────
 
     @property
     def katago_path(self) -> str:
@@ -62,9 +69,14 @@ class WindowsAnalyzer(BaseAnalyzer):
     def config_path(self, value: Optional[str]):
         self._config_path = value
 
-    # ── 进程生命周期 ─────────────────────────────────
+    # ── 进程生命周期 ────────────────────────────
 
     def _start(self):
+        """启动 KataGo 常驻进程。
+
+        从 Windows Python 直接调用 exe（不需要 cmd.exe /c）。
+        从 WSL Python 调用时，路径必须是 Windows 可访问的（/mnt/c/... 或 C:\...）。
+        """
         cmd = [self._katago_path, "analysis", "-model", self._model_path]
         if self._config_path:
             cmd += ["-config", self._config_path]
@@ -76,7 +88,7 @@ class WindowsAnalyzer(BaseAnalyzer):
         )
 
     def _kill(self):
-        proc = self._proc
+        proc = getattr(self, '_proc', None)
         if proc is None:
             return
         self._proc = None
@@ -111,7 +123,7 @@ class WindowsAnalyzer(BaseAnalyzer):
                 return False
         return True
 
-    # ── 批量分析 ────────────────────────────────────
+    # ── 批量分析 ────────────────────────────────
 
     def analyze(self, moves: list) -> AnalysisResult:
         """批量分析一局棋谱。常驻进程复用。超时自动重启。"""
@@ -125,7 +137,6 @@ class WindowsAnalyzer(BaseAnalyzer):
                 return AnalysisResult(success=False, duration_s=time.time() - t0)
             proc = self._proc
 
-        # 构建全部查询
         queries = [
             json.dumps({
                 "id": f"g_{i}", "moves": moves[:i],
@@ -137,7 +148,6 @@ class WindowsAnalyzer(BaseAnalyzer):
             for i in range(n)
         ]
 
-        # 发送
         try:
             proc.stdin.write("\n".join(queries) + "\n")
             proc.stdin.flush()
@@ -145,7 +155,6 @@ class WindowsAnalyzer(BaseAnalyzer):
             self._kill()
             return AnalysisResult(success=False, duration_s=time.time() - t0)
 
-        # 读取响应（带超时）
         responses = {}
         deadline = time.time() + self.batch_timeout
         while len(responses) < n and time.time() < deadline:
@@ -162,12 +171,10 @@ class WindowsAnalyzer(BaseAnalyzer):
 
         dt = time.time() - t0
 
-        # 如果超时或读不到数据，杀进程重启
         if not responses:
             self._kill()
             return AnalysisResult(success=False, duration_s=dt)
 
-        # 提取特征
         success = len(responses) >= n
         feats = extract_12dim_features(responses, moves[:len(responses)])
 
