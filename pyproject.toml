@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "go-analyzer"
-version = "0.4.1"
+version = "0.4.4"
 description = "Go game strength analysis — SGF→KataGo→NPZ→Evaluation + Distributed framework"
 authors = [{ name = "Tom Zhao", email = "ahill.zhao@gmail.com" }]
 license = { text = "MIT" }
