@@ -46,12 +46,21 @@ class AnalysisResult:
         return len(self.features)
 
 
+# GTP column letters (skipping I, matching KataGo convention)
+_GTP_COLUMNS = list("ABCDEFGHJKLMNOPQRSTUVWXYZ")
+
+
+def _coord_to_gtp(x: int, y: int) -> str:
+    """Convert 0-indexed board coordinates to GTP coordinate string (e.g. (3,3) → 'D4')."""
+    return f"{_GTP_COLUMNS[x]}{y + 1}"
+
+
 def extract_12dim_features(responses: dict, moves: list) -> np.ndarray:
     """从 KataGo 分析响应中提取 12 维特征矩阵。
 
     Args:
         responses: {move_idx: kata_response_json}
-        moves: [[player, gtp_coord], ...]  主线位移
+        moves: [{"x": N, "y": N}, ...]  主线位移 (0-indexed 棋盘坐标)
 
     Returns:
         (N, 12) float32 ndarray
@@ -77,7 +86,9 @@ def extract_12dim_features(responses: dict, moves: list) -> np.ndarray:
         resp = responses.get(qi, {})
         if not resp:
             continue
-        player, coord = moves[qi]
+        x, y = moves[qi]["x"], moves[qi]["y"]
+        coord = _coord_to_gtp(x, y)
+        player = "B" if qi % 2 == 0 else "W"
         infos = resp.get("moveInfos", [])
         found = next((m for m in infos if m.get("move") == coord), None)
 
@@ -157,7 +168,7 @@ class BaseAnalyzer(abc.ABC):
         """分析一局棋的位移序列。
 
         Args:
-            moves: [[player, gtp_coord], ...]  主线位移
+            moves: [{"x": N, "y": N}, ...]  主线位移 (0-indexed 棋盘坐标)
 
         Returns:
             AnalysisResult 包含 12 维特征矩阵
@@ -268,6 +279,7 @@ class BaseAnalyzer(abc.ABC):
         # 如果调优成功，更新自身配置
         benchmark_result = {}
         best_cfg = config_tune.get("best_config", {})
+        _original_config = self.config_path  # 保存，防止 tempfile 悬空
         if best_cfg.get("vps", 0) > 0:
             self.numSearchThreads = best_cfg.get("numSearchThreads",
                                                   getattr(self, "numSearchThreads", 8))
@@ -276,10 +288,12 @@ class BaseAnalyzer(abc.ABC):
             self.nnMaxBatchSize = best_cfg.get("nnMaxBatchSize",
                                                getattr(self, "nnMaxBatchSize", 50))
 
-            # 如果 tune_config 写入了推荐配置文件，用它；否则写临时 cfg 跑 benchmark
+            # 如果 tune_config 已写入推荐配置文件，用它跑 benchmark
+            # 否则写临时 cfg 跑完即删（benchmark 后恢复原 config）
             rec_path = config_tune.get("recommended_config_path", "")
             if rec_path and Path(rec_path).exists():
                 self.config_path = rec_path
+                benchmark_result = self.benchmark()
             else:
                 tmp_cfg = Path(tempfile.mktemp(suffix=".cfg"))
                 try:
@@ -295,6 +309,9 @@ class BaseAnalyzer(abc.ABC):
 
             # 杀当前进程，下次 analyze 用新配置启动
             self.shutdown()
+
+        # 恢复 config_path（防止 tempfile 已删但指针还在）
+        self.config_path = _original_config
 
         return {
             "environment": env,

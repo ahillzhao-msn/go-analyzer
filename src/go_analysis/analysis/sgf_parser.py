@@ -1,7 +1,7 @@
 """analysis/sgf_parser.py — SGF 解析 + 主线提取。
 
 注意: 此文件是独立自包含的 SGF 解析器 (无 torch/numpy 依赖)。
-核心功能: extract_main_line(sgf_content) → [[player, gtp], ...]
+核心功能: extract_main_line(sgf_content) → [{"x": N, "y": N}, ...]
 
 源文件: go_analysis/core/sgf_parser.py (复用实现)
 """
@@ -339,12 +339,13 @@ class SGF:
 
 
 def extract_main_line(sgf_content: str) -> list:
-    """Parse SGF, extract main line moves as [[player, gtp_coord], ...].
+    """Parse SGF, extract main line moves as [{"x": N, "y": N}, ...].
 
     Follows the FIRST child at each branch point (the actual game),
     ignoring all variation branches (review comments, analysis lines).
 
-    Returns list like [["B", "Q16"], ["W", "D4"], ...] or empty list on parse failure.
+    Uses 0-indexed board coordinates matching KataGo's {"x": col, "y": row} format.
+    Returns list like [{"x": 3, "y": 3}, {"x": 15, "y": 15}, ...] or empty list on parse failure.
     """
     try:
         root = SGF.parse(sgf_content)
@@ -356,8 +357,8 @@ def extract_main_line(sgf_content: str) -> list:
     while node and node.children:
         node = node.children[0]  # First child = main line
         m = node.move
-        if m and not m.is_pass:
-            moves.append([m.player, m.gtp()])
+        if m and not m.is_pass and m.coords is not None:
+            moves.append({"x": m.coords[0], "y": m.coords[1]})
     return moves
 
 

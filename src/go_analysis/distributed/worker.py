@@ -434,6 +434,7 @@ def main():
             worker.run()
         except KeyboardInterrupt:
             worker.stop()
+            worker.shutdown()
 
 
 if __name__ == "__main__":

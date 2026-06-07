@@ -9,14 +9,21 @@ v0.5.1: 常驻进程 + 批量查询。
 """
 import json
 import logging
+import queue
+import select
 import subprocess
+import sys
 import threading
 import time
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, TextIO
 
 from .base import BaseAnalyzer, AnalysisResult, extract_12dim_features
 
 log = logging.getLogger("analyzer.windows")
+
+# 用于 Windows 超时 readline 的共享线程池
+_readline_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readline")
 
 
 class WindowsAnalyzer(BaseAnalyzer):
@@ -125,6 +132,34 @@ class WindowsAnalyzer(BaseAnalyzer):
 
     # ── 批量分析 ────────────────────────────────
 
+    @staticmethod
+    def _readline_timeout(stream, deadline: float) -> Optional[str]:
+        """读一行带超时。超时返回 None，EOF 返回 ''。"""
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        # 优先用 select（Linux/WSL 管道可用，效率高）
+        if sys.platform != "win32":
+            try:
+                r, _, _ = select.select([stream], [], [], min(remaining, 0.5))
+                if r:
+                    return stream.readline()
+                return None
+            except (TypeError, ValueError, OSError):
+                pass
+        # Windows 管道：用线程池 + timeout
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        fut = _readline_pool.submit(stream.readline)
+        try:
+            return fut.result(timeout=min(remaining, 5.0))
+        except TimeoutError:
+            # 超时不取消 future（让后台线程自然完成），返回 None
+            return None
+        except Exception:
+            return None
+
     def analyze(self, moves: list) -> AnalysisResult:
         """批量分析一局棋谱。常驻进程复用。超时自动重启。"""
         if not moves:
@@ -132,53 +167,57 @@ class WindowsAnalyzer(BaseAnalyzer):
 
         n, t0 = len(moves), time.time()
 
+        # 整个操作在锁内：防止 shutdown() 在 I/O 期间杀进程
         with self._lock:
             if not self._ensure():
                 return AnalysisResult(success=False, duration_s=time.time() - t0)
             proc = self._proc
+            if proc is None or proc.poll() is not None:
+                return AnalysisResult(success=False, duration_s=time.time() - t0)
 
-        queries = [
-            json.dumps({
-                "id": f"g_{i}", "moves": moves[:i],
-                "maxVisits": self.visits,
-                "rules": "chinese", "komi": 7.5,
-                "boardXSize": 19, "boardYSize": 19,
-                "includePolicy": True,
-            })
-            for i in range(n)
-        ]
+            queries = [
+                json.dumps({
+                    "id": f"g_{i}", "moves": moves[:i],
+                    "maxVisits": self.visits,
+                    "rules": "chinese", "komi": 7.5,
+                    "boardXSize": 19, "boardYSize": 19,
+                    "includePolicy": True,
+                })
+                for i in range(n)
+            ]
 
-        try:
-            proc.stdin.write("\n".join(queries) + "\n")
-            proc.stdin.flush()
-        except Exception:
-            self._kill()
-            return AnalysisResult(success=False, duration_s=time.time() - t0)
-
-        responses = {}
-        deadline = time.time() + self.batch_timeout
-        while len(responses) < n and time.time() < deadline:
             try:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                r = json.loads(line.strip())
-                parts = r.get("id", "").split("_")
-                if parts and parts[-1].isdigit():
-                    responses[int(parts[-1])] = r
+                proc.stdin.write("\n".join(queries) + "\n")
+                proc.stdin.flush()
             except Exception:
-                continue
+                self._kill()
+                return AnalysisResult(success=False, duration_s=time.time() - t0)
 
-        dt = time.time() - t0
+            responses = {}
+            deadline = time.time() + self.batch_timeout
+            # 使用非阻塞 readline: 每次尝试读一行，超时则重试
+            while len(responses) < n and time.time() < deadline:
+                try:
+                    line = self._readline_timeout(proc.stdout, deadline)
+                    if line is None:  # 超时
+                        continue
+                    if not line:  # EOF
+                        break
+                    r = json.loads(line.strip())
+                    parts = r.get("id", "").split("_")
+                    if parts and parts[-1].isdigit():
+                        responses[int(parts[-1])] = r
+                except Exception:
+                    continue
 
-        if not responses:
-            self._kill()
-            return AnalysisResult(success=False, duration_s=dt)
+            dt = time.time() - t0
 
-        success = len(responses) >= n
-        feats = extract_12dim_features(responses, moves[:len(responses)])
+            if not responses:
+                self._kill()
+                return AnalysisResult(success=False, duration_s=dt)
 
-        with self._lock:
+            success = len(responses) >= n
+            feats = extract_12dim_features(responses, moves[:len(responses)])
             self._games += 1
 
         return AnalysisResult(features=feats, duration_s=dt, success=success,
