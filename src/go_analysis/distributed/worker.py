@@ -65,6 +65,9 @@ class Worker:
         # 自动检测工作模式
         self._mode = self._detect_mode()
 
+        # 远程已分析集合（从 coordinator /remote-done 同步）
+        self._remote_done: set[str] = set()
+
     @staticmethod
     def _detect_mode() -> str:
         """自动检测 worker 运行模式: linux / windows / wsl_over_windows"""
@@ -200,6 +203,18 @@ class Worker:
             t.start()
             log.info(f"Coordinator heartbeat thread started -> {self.coordinator_url}")
 
+            # 同步远程已分析棋谱列表（每 2 分钟）
+            def _sync_remote_done():
+                while not self._stop:
+                    try:
+                        self._sync_remote_done()
+                    except Exception:
+                        pass
+                    time.sleep(120)
+            t2 = threading.Thread(target=_sync_remote_done, daemon=True)
+            t2.start()
+            log.info(f"Remote-done sync thread started")
+
         while not self._stop:
             # 构建 game_id → path 映射 (避免每局独立 rglob)
             from ..data.source import FolderSource
@@ -209,7 +224,7 @@ class Worker:
             done = set(store.list())
             game_paths = {}
             for gid, path_str, _ in source._scan():
-                if gid not in done and gid not in self._skipped:
+                if gid not in done and gid not in self._skipped and gid not in self._remote_done:
                     game_paths[gid] = Path(path_str)
 
             if not game_paths:
@@ -294,6 +309,23 @@ class Worker:
         except (URLError, json.JSONDecodeError, OSError) as e:
             log.warning(f"Coordinator registration failed: {e}")
             return None
+
+    def _sync_remote_done(self):
+        """从 coordinator 拉取全局已分析棋谱列表，跳过已由远程 Worker 完成的棋局。"""
+        if not self.coordinator_url:
+            return
+        try:
+            req = Request(f"{self.coordinator_url}/remote-done", method="GET",
+                          headers={"Accept": "application/json"})
+            with urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                done = set(data.get("done", []))
+            added = done - self._remote_done
+            self._remote_done = done
+            if added:
+                log.info(f"Remote-done: {len(added)} new games skipped ({len(done)} total)")
+        except (URLError, json.JSONDecodeError, OSError) as e:
+            log.debug(f"Remote-done sync failed: {e}")
 
     def _get_host_ip(self) -> str:
         """获取本机 IP (用于注册状态 URL)。始终返回 127.0.0.1 避免防火墙问题。"""

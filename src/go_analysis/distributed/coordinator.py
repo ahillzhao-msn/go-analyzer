@@ -579,6 +579,9 @@ class Coordinator:
                     self._respond(200, coord.stats())
                 elif path in ("/", "/dashboard"):
                     self._respond_html(200, _render_dashboard(coord.stats()))
+                elif path == "/remote-done":
+                    done = list(coord._known_done())
+                    self._respond(200, {"done": done, "count": len(done)})
                 else:
                     self._respond(404, {"error": "not_found"})
 
