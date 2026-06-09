@@ -10,15 +10,14 @@ if /i "%CMD%"=="start" goto :START
 if /i "%CMD%"=="install" goto :INSTALL
 if /i "%CMD%"=="build" goto :BUILD
 if /i "%CMD%"=="status" goto :STATUS
+if /i "%CMD%"=="katago" goto :KATAGO
 if /i "%CMD%"=="full" goto :FULL
-echo Usage: %~nx0 ^<stop^|start^|install^|build^|status^|full^>
+echo Usage: %~nx0 ^<stop^|start^|install^|build^|status^|katago^|full^>
 exit /b 1
 
 :STOP
 echo Stopping services...
 taskkill /f /im pythonw.exe >nul 2>nul
-taskkill /f /im katago.exe >nul 2>nul
-echo OK
 exit /b 0
 
 :BUILD
@@ -41,13 +40,29 @@ del /q "%~dp0coordinator_data\coordinator.db" 2>nul
 echo OK
 exit /b 0
 
+:KATAGO
+echo Downloading katago.exe (OpenCL, v1.16.5-trunk)...
+mkdir "%~dp0katago" 2>nul
+"%~dp0venv\Scripts\python.exe" -c "from go_analysis.analyzer.batch_adapter import download_katago; print(download_katago(r'%~dp0katago'))"
+if not exist "%~dp0katago\katago.exe" echo FAILED & exit /b 1
+echo OK
+exit /b 0
+
 :START
 call :KILL_PORT 18081
 echo Starting Coordinator...
 start "" "%~dp0venv\Scripts\pythonw.exe" -m go_analysis.distributed.coordinator --sgf-dir training --store-dir analysis_store --port 18081 --data-dir coordinator_data --log-level INFO
 timeout /t 5 /nobreak >nul
-echo Starting Worker...
-start "" "%~dp0venv\Scripts\pythonw.exe" -m go_analysis.distributed.worker --sgf-dir training --store-dir analysis_store --katago "%~dp0katago\katago.exe" --model "%~dp0models\kata1-b18c384nbt-s6582191360-d3422816034.bin.gz" --config "%~dp0analysis_config.cfg" --visits 25 --sync-port 18083 --coordinator-url http://127.0.0.1:18081 --log-dir logs --log-level INFO --katago-max-games 50 --katago-max-age 1800
+
+echo Starting Worker (batch_analysis mode)...
+start "" "%~dp0venv\Scripts\pythonw.exe" -m go_analysis.distributed.worker ^
+    --sgf-dir training --store-dir analysis_store ^
+    --katago "%~dp0katago\katago.exe" ^
+    --model "%~dp0models\kata1-b18c384nbt-s6582191360-d3422816034.bin.gz" ^
+    --human-model "%~dp0models\b18c384nbt-humanv0.bin.gz" ^
+    --config "%~dp0analysis_config.cfg" ^
+    --visits 25 --sync-port 18083 --coordinator-url http://127.0.0.1:18081 ^
+    --log-dir logs --log-level INFO --batch-mode
 timeout /t 3 /nobreak >nul
 echo OK
 exit /b 0
@@ -55,6 +70,7 @@ exit /b 0
 :FULL
 call :STOP
 call :INSTALL
+call :KATAGO
 del /q "%~dp0logs\worker.log" 2>nul
 del /q "%~dp0coordinator_data\coordinator.log" 2>nul
 call :START
@@ -82,7 +98,6 @@ if %RETRY% gtr 10 (
 )
 netstat -ano | findstr ":%PORT%" >nul 2>nul
 if errorlevel 1 exit /b 0
-
 echo   Port %PORT% in use, killing...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%PORT%" ^| findstr LISTENING') do (
     taskkill /f /t /pid %%p >nul 2>nul
