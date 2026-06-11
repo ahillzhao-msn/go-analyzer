@@ -1,5 +1,21 @@
 # Go Analyzer
 
+> ## ⚠️ ARCHIVED (2026-06-11)
+>
+> This project is superseded by **[KataRank](https://github.com/ahillzhao-msn/KataRank)**
+> (analysis engine: persistent KataGo daemon, KAB2 protocol,
+> DualViewSetTransformer rank model, REST API) and
+> **[gopredict](https://github.com/ahillzhao-msn/gopredict)** (game database
+> & player analysis platform, with KataRank as its sole engine — see its
+> `docs/adr/004-katarank-sole-engine.md`).
+>
+> This repo's own migration had already begun: the final commit integrates
+> `batch_analysis` — the same engine KataRank wraps. Salvaged assets:
+> the GameMeta normalization rules (commit `5e85047`,
+> `analysis_format.py`) now live in gopredict's `engine/meta.py`.
+> The distributed worker/coordinator framework (SSH/HTTP adapters,
+> remote-done sync) remains here for reference.
+
 围棋棋力分析系统 — Transformer + 序数回归 (Ordinal Regression)
 
 ## 架构
